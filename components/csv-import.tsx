@@ -22,6 +22,7 @@ import {
 } from '@/lib/variety-resolution'
 import { downloadExcelTemplate } from '@/lib/import-template'
 import Dropzone, { rejectMessage } from '@/components/dropzone'
+import { exportToCsv } from '@/lib/exports'
 
 const CSV_ACCEPT = '.csv,text/csv,text/plain,.xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel'
 
@@ -51,16 +52,14 @@ function downloadTemplate(config: ImportConfig) {
     // actually required of the file, so it loses the star.
     return c.required && !c.fk?.fallbackId ? `${base}*` : base
   })
-  const csv = headers.join(',') + '\n'
-  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = `${config.tableName}-template.csv`
-  document.body.appendChild(a)
-  a.click()
-  document.body.removeChild(a)
-  URL.revokeObjectURL(url)
+  // The shared CSV writer (lib/exports): one download path for every file the
+  // app hands out, with the byte-order mark Excel needs and headers quoted
+  // when they must be.
+  void exportToCsv({
+    title: `${config.tableName} template`,
+    filename: `${config.tableName}-template`,
+    sections: [{ columns: headers.map((label) => ({ label })), rows: [] }],
+  })
 }
 
 export default function CsvImport({ config, onImported, defaultOpen, recommended, blockedReason }: Props) {

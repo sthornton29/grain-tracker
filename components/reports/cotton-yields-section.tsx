@@ -271,16 +271,21 @@ export function cottonSectionExport(rows: readonly CottonSectionRow[], title?: s
     r.y.lintPerAcre ?? '',
     r.y.turnoutPct ?? '',
     r.y.turnoutBasis == null ? '' : r.y.turnoutBasis === 'actual' ? 'actual' : 'est.',
-    r.y.bales,
-    r.overridden ? 'complete (counted)' : STATUS_LABEL[r.status],
-    GINNING_STATUS_LABEL[r.y.ginning] === '—' ? '' : GINNING_STATUS_LABEL[r.y.ginning],
+    // No bales yet is a blank, as on screen — not a 0.
+    r.y.bales > 0 ? r.y.bales : '',
+    // Amber "in progress", as in the row's detail on screen.
+    r.overridden ? 'complete (counted)' : r.status === 'in_progress' ? { v: STATUS_LABEL[r.status], tone: 'warning' } : STATUS_LABEL[r.status],
+    // The badge's colors: green once ginned, amber while seed cotton is on the yard.
+    r.y.ginning === 'none' ? '' : { v: GINNING_STATUS_LABEL[r.y.ginning], tone: r.y.ginning === 'ginned' ? 'favorable' : 'warning' },
   ] as ExportSection['rows'][number])
   const t = totalsOf(rows)
+  // The total leaves blank what the screen's total row leaves blank.
   data.push([
-    'Total', '', '', t.acres, t.seed, t.acres > 0 && t.seed > 0 ? t.seed / t.acres : '', t.lint, t.est > 0 ? 'incl. est.' : '',
-    t.acres > 0 && t.lint > 0 ? t.lint / t.acres : '', t.seedGinned > 0 ? Math.round((t.actual / t.seedGinned) * 1000) / 10 : '', '', t.bales, '', '',
+    'Total', '', '', t.acres, t.seed > 0 ? t.seed : '', t.acres > 0 && t.seed > 0 ? t.seed / t.acres : '', t.lint > 0 ? t.lint : '', t.est > 0 ? 'incl. est.' : '',
+    t.acres > 0 && t.lint > 0 ? t.lint / t.acres : '', t.seedGinned > 0 && t.actual > 0 ? Math.round((t.actual / t.seedGinned) * 1000) / 10 : '', '', t.bales > 0 ? t.bales : '', '', '',
   ] as ExportSection['rows'][number])
-  return { title, columns: COTTON_SECTION_COLUMNS, rows: data, rowMeta: [...rows.map(() => 'data' as const), 'total'] }
+  // Farm + Field stay in view while the 14 columns scroll.
+  return { title, freezeColumns: 2, columns: COTTON_SECTION_COLUMNS, rows: data, rowMeta: [...rows.map(() => 'data' as const), 'total'] }
 }
 
 function totalsOf(rows: readonly CottonSectionRow[]) {

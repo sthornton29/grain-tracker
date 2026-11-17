@@ -38,6 +38,7 @@ import {
   type LeaseTermsShape,
   type SettlementGap,
   type SettlementStatement,
+  SOURCE_LABEL,
 } from '@/lib/rent-settlement'
 import type { Crop, Farm, Field, FieldPlanting, Landowner, LeaseTerm, RentSettlement } from '@/lib/types'
 import { SourceChip, fmtUsd, fmtInt } from '@/components/reports/report-kit'
@@ -410,8 +411,13 @@ export default function RentSettlementReport() {
       ...settlementExportPayload({ statement, landownerAddress: lo?.address ?? null }),
       branding: { mode: 'org' as const, ...b },
     }
-    if (kind === 'pdf') await exportToPdf(payload)
-    else await exportToExcel(payload)
+    // A failed export says so (it used to do nothing at all).
+    try {
+      if (kind === 'pdf') await exportToPdf(payload)
+      else await exportToExcel(payload)
+    } catch (e) {
+      setErr(reportError(e as Error, { action: 'build this statement' }))
+    }
   }
 
   // The delete confirmation (an app dialog, not window.confirm).
@@ -705,7 +711,7 @@ export default function RentSettlementReport() {
                 <ul className="ml-3">
                   {sec.lines.map((l, i) => (
                     <li key={i} className="flex justify-between gap-3 py-0.5">
-                      <span>{l.label} <SourceChip className="ml-1">{l.source}</SourceChip></span>
+                      <span>{l.label} <SourceChip className="ml-1">{SOURCE_LABEL[l.source]}</SourceChip></span>
                       <span className="tabular-nums">{l.amount != null ? fmtUsd(l.amount, 2) : l.quantityBu != null ? `${fmtInt(l.quantityBu)} bu` : ''}</span>
                     </li>
                   ))}

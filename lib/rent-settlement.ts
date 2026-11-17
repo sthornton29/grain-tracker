@@ -189,7 +189,7 @@ export type SettlementStatement = {
 
 const r2 = (v: number) => Math.round(v * 100) / 100
 
-const SOURCE_LABEL: Record<SettlementSource, string> = {
+export const SOURCE_LABEL: Record<SettlementSource, string> = {
   account: 'From farm records',
   entered: 'Entered at settlement',
   reference: 'Reference price (confirmed)',
@@ -206,10 +206,17 @@ export function settlementExportPayload(args: {
   const columns: import('@/lib/exports').ExportColumn[] = [
     { label: 'Item', width: 52 },
     { label: 'Bushels', align: 'right', format: 'bu' },
-    { label: '$/bu', align: 'right', format: 'price' },
+    { label: 'Price ($/bu)', align: 'right', format: 'price' },
     { label: 'Amount', align: 'right', format: 'usd2' },
     { label: 'Source' },
   ]
+  // A dollar figure for a headline card, negatives in parentheses like every
+  // amount in the tables (a landowner who markets their own grain can owe a
+  // balance of shared expenses).
+  const usd = (v: number) => {
+    const body = `$${Math.abs(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+    return v < 0 ? `(${body})` : body
+  }
   const sections: import('@/lib/exports').ExportSection[] = s.sections.map((sec) => ({
     title: sec.title,
     columns,
@@ -234,15 +241,20 @@ export function settlementExportPayload(args: {
     ]],
     rowMeta: ['total'],
   })
+  // The signature block sits on the same five columns as the tables above it
+  // (unlabeled): every table of the statement shares one sheet in Excel, so a
+  // wide second column here would stretch Bushels across the page. The
+  // signature goes under Item, its date under Source.
   sections.push({
     title: 'Acknowledgment',
-    columns: [{ label: '', width: 40 }, { label: '', width: 40 }],
+    columns: columns.map((c) => ({ label: '', width: c.width })),
+    banded: false,
     rows: [
-      [s.paymentTiming ? `Payment terms: ${s.paymentTiming}` : 'Payment terms: per lease', ''],
-      ['', ''],
-      ['Landowner signature: ______________________________', 'Date: ______________'],
-      ['Operator signature:  ______________________________', 'Date: ______________'],
-      ['Notes:', ''],
+      [s.paymentTiming ? `Payment terms: ${s.paymentTiming}` : 'Payment terms: per lease', '', '', '', ''],
+      ['', '', '', '', ''],
+      ['Landowner signature: ______________________________', '', '', '', 'Date: ______________'],
+      ['Operator signature:  ______________________________', '', '', '', 'Date: ______________'],
+      ['Notes:', '', '', '', ''],
     ],
   })
   const slugName = s.landownerName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
@@ -252,7 +264,7 @@ export function settlementExportPayload(args: {
     summary: [
       { label: 'Landowner', value: s.landownerName },
       { label: 'Crop year', value: String(s.cropYear) },
-      { label: s.bushelsOnly ? 'Balance' : 'Total due', value: `$${s.totalDue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` },
+      { label: s.bushelsOnly ? 'Balance' : 'Total due', value: usd(s.totalDue) },
     ],
     sections,
     filename: `rent-settlement-${slugName}-${s.cropYear}`,
@@ -288,10 +300,13 @@ export function buildSettlement(args: {
       const pct = sharePctFor(terms, p.cropName)
       if (p.totalBu <= 0 || pct == null || pct <= 0) continue
       const shareBu = r2((p.totalBu * pct) / 100)
+      // The share as the statement prints it: a one-third share stored as
+      // 33.333333333333336 reads "33.3333%" (the math keeps the full figure).
+      const pctText = String(Math.round(pct * 10000) / 10000)
       const lines: SettlementLine[] = []
       if (method === 'landowner_sells_own') {
         lines.push({
-          label: `Landowner share — ${pct}% of ${r2(p.totalBu).toLocaleString()} bu (landowner markets own grain)`,
+          label: `Landowner share — ${pctText}% of ${r2(p.totalBu).toLocaleString()} bu (landowner markets own grain)`,
           quantityBu: shareBu, pricePerBu: null, amount: null, source: 'account',
         })
       } else {
@@ -300,7 +315,7 @@ export function buildSettlement(args: {
         const priceSource: SettlementSource =
           method === 'reference' ? 'reference' : gapValues[`price|${p.cropName}`] != null ? 'entered' : 'account'
         lines.push({
-          label: `Landowner share — ${pct}% of ${r2(p.totalBu).toLocaleString()} bu @ $${r2(price).toFixed(2)}/bu`,
+          label: `Landowner share — ${pctText}% of ${r2(p.totalBu).toLocaleString()} bu @ $${r2(price).toFixed(2)}/bu`,
           quantityBu: shareBu, pricePerBu: r2(price), amount: r2(shareBu * price), source: priceSource,
         })
       }
@@ -309,7 +324,7 @@ export function buildSettlement(args: {
         if (total === 0) continue
         const share = r2((total * e.landownerPct) / 100)
         lines.push({
-          label: `Less: ${e.category} — landowner ${e.landownerPct}% of $${r2(total).toLocaleString()}`,
+          label: `Less: ${e.category} — landowner ${e.landownerPct}% of $${r2(total).toLocaleString(undefined, { minimumFractionDigits: Number.isInteger(r2(total)) ? 0 : 2, maximumFractionDigits: 2 })}`,
           quantityBu: null, pricePerBu: null, amount: -share, source: 'entered',
         })
       }

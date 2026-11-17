@@ -4,10 +4,11 @@ import {
   groupRows, harvestSpanOf, kpis, rowsInBin, varietyOfPlanting, committedElsewhere, estimatedBalesFromPicked, type BaleQualityInputs, type BaleRow,
 } from '@/lib/bale-quality-report'
 import { buildBaleQualityPdfPayload, buildBaleQualityWorkbook, buildQualifyingBalesWorkbook, SECTION, SPEC_ROW, kpiCards } from '@/lib/bale-quality-export'
-import { evaluatePayload, formulaTextOf, payloadHasFormulas, formulaLayout, type ExportPayload } from '@/lib/exports'
+import { buildExcelWorkbook, evaluatePayload, formulaTextOf, payloadHasFormulas, formulaLayout, type ExportPayload } from '@/lib/exports'
 import { toExcelFormula } from '@/lib/formula'
 import { g, VS_SPEC } from '@/lib/cotton-contract-spec.test'
 import type { GradeLike } from '@/lib/cotton-quality'
+import { dumpExport } from '@/lib/export-dump'
 
 // The hand-verified VS&Co fixture, wired through the real chain: bale → gin
 // receipt → farm / field / entity / gin → planting (practice, varieties) →
@@ -215,11 +216,27 @@ describe('contract view and comparison rows', () => {
     expect(cards[2].sub).toContain('58.00¢ vs 55.00¢/lb base')
     expect(cards[4].value).toBe('25.0%')
     const pdf = buildBaleQualityPdfPayload({ ...input, factors: [...input.factors] })
-    expect(pdf.sections.map((s) => s.title)).toEqual(['Factor distributions', 'Color grade grid (bales · % of classed)', 'By farm', 'Contract: VS&Co', 'Bales'])
-    const contractRows = pdf.sections[3].rows.map((r) => r[0])
+    // The screen's order: the contract first, then the factors, the comparison and the bale list.
+    expect(pdf.sections.map((s) => s.title)).toEqual(['Contract: VS&Co', 'Factor distributions', 'Color grade grid (bales · % of classed · × = outside the contract’s allowed colors)', 'By farm', 'Bales'])
+    const contractRows = pdf.sections[0].rows.map((r) => r[0])
     expect(contractRows).toContain('Fails Color grade')
     expect(pdf.sections[4].rows).toHaveLength(10)
     expect(pdf.sections[4].columns.map((c) => c.label)).toContain('Failing factors')
+    // The bale list leaves in PBI order with real class dates; the color grid's mark prints in a PDF.
+    expect(pdf.sections[4].rows.map((r) => r[0])).toEqual(['181001', '181002', '181003', '181004', '181005', '181006', '181007', '181008', '181009', '181010'])
+    expect(pdf.sections[4].columns.find((c) => c.label === 'Class date')?.format).toBe('date')
+    expect(JSON.stringify(pdf)).not.toContain('✕')
+    // An average staple reads to a tenth (337 / 9 = 37.44…), not as the whole fraction.
+    const stapleOnly = buildBaleQualityPdfPayload({ ...input, factors: ['staple'] })
+    expect(stapleOnly.sections[1].rows[0][0]).toBe('Staple (32nds) · avg 37.4')
+    // Colored as the screen is: the result chip, and a discount reading in the bale list.
+    const baleCols = pdf.sections[4].columns.map((c) => c.label)
+    const b3 = pdf.sections[4].rows[2]
+    expect(b3[baleCols.indexOf('Contract')]).toEqual({ v: 'Fails', tone: 'unfavorable' })
+    expect(b3[baleCols.indexOf('Color')]).toEqual({ v: '42', tone: 'unfavorable' })
+    expect(pdf.sections[4].rows[0][baleCols.indexOf('Contract')]).toEqual({ v: 'Meets', tone: 'favorable' })
+    // Without a contract the grid needs no legend.
+    expect(buildBaleQualityPdfPayload({ ...input, factors: [...input.factors], contract: null }).sections.map((s) => s.title)).toEqual(['Factor distributions', 'Color grade grid (bales · % of classed)', 'By farm', 'Bales'])
   })
 })
 
@@ -231,6 +248,10 @@ describe('Excel workbook — live formulas prove the app’s numbers', () => {
     filterSummary: '2026 Crop Year · All entities', contract: { id: 'VS', label: 'VS&Co', spec: VS_SPEC, view },
   })
   const colIndex = (p: ExportPayload, section: string, key: string) => p.sections.find((s) => s.key === section)!.columns.findIndex((c) => c.key === key)
+  it('the finished workbook builds (EXPORT_DUMP_DIR writes it out to look at)', async () => {
+    const { xlsx } = await dumpExport('bale-quality', build())
+    expect(xlsx.byteLength).toBeGreaterThan(1000)
+  })
   it('the Bales tab’s Meets spec column equals the evaluator: 2 meets / 6 fails / 1 not eligible, with the failing factors', () => {
     const p = build()
     expect(payloadHasFormulas(p)).toBe(true)
@@ -270,13 +291,16 @@ describe('Excel workbook — live formulas prove the app’s numbers', () => {
     expect(row('Micronaire', '% base')[3]).toBe(6)
     expect(row('Strength (g/tex)', '% premium')[3]).toBe(8)
     expect(row('Uniformity (%)', '% discount')[3]).toBe(1)
-    expect(row('Micronaire', 'Average (bale-weighted)')[5]).toBeCloseTo(39.0 / 9, 9)
-    expect(row('Micronaire', 'Average (bale-weighted)')[6]).toBeCloseTo(factorAverage(rows, 'mic', 'lbs')!, 9)
+    // Averages sit under their own "Average" / "Lbs-weighted average" headings (columns 6 and 7), not under "% of bales".
+    expect(p.sections.find((s) => s.key === SECTION.summary)!.columns.map((c) => c.label)).toEqual(['Factor', 'Bucket / item', 'Band', 'Bales', 'Lbs', '% of bales', 'Average', 'Lbs-weighted average'])
+    expect(row('Micronaire', 'Average (bale-weighted)')[5]).toBe('')
+    expect(row('Micronaire', 'Average (bale-weighted)')[6]).toBeCloseTo(39.0 / 9, 9)
+    expect(row('Micronaire', 'Average (bale-weighted)')[7]).toBeCloseTo(factorAverage(rows, 'mic', 'lbs')!, 9)
     expect(row('Color grade', '31 M')[3]).toBe(5)
     expect(row('Leaf grade', 'Leaf 2')[3]).toBe(4)
     expect(row('Staple (32nds)', '38')[3]).toBe(5)
-    expect(row('Loan value (¢/lb)', 'Average loan value (lbs-weighted — loan value always is)')[5]).toBeCloseTo(58, 6)
-    expect(row('Loan value (¢/lb)', 'Average vs the 55.00¢ base loan rate (lbs-weighted)')[5]).toBeCloseTo(3, 6)
+    expect(row('Loan value (¢/lb)', 'Average loan value (lbs-weighted — loan value always is)')[6]).toBeCloseTo(58, 6)
+    expect(row('Loan value (¢/lb)', 'Average vs the 55.00¢ base loan rate (lbs-weighted)')[6]).toBeCloseTo(3, 6)
     // The By Group tab: AVERAGEIFS per farm and % meets.
     const groups = grid[SECTION.groups]
     const gRows = p.sections.find((s) => s.key === SECTION.groups)!.rows
@@ -315,6 +339,49 @@ describe('Excel workbook — live formulas prove the app’s numbers', () => {
     expect(layout[SECTION.bales].sheetName).toBe('Bales')
     const meets = p.sections.find((s) => s.key === SECTION.summary)!.rows.find((r) => r[1] === 'Meet the spec')![3] as { f: NonNullable<unknown> }
     expect(toExcelFormula(meets.f as never, { layout, at: { s: SECTION.summary, r: 0 } })).toMatch(/^COUNTIF\('?Bales'?!\$[A-Z]+\$\d+:\$[A-Z]+\$\d+,"Meets"\)$/)
+  })
+  it('every tab keeps a title and one line above its header; the headline figures sit under the table', () => {
+    const p = build()
+    for (const s of p.sections) {
+      expect((s.prelude ?? []).length + (s.note ? 1 : 0), s.title).toBeLessThanOrEqual(2)
+      expect((s.prelude ?? []).filter((r) => r.kind !== 'title' && r.kind !== 'text'), s.title).toEqual([])
+    }
+    // Header rows: Summary and Contract Spec on row 4 (title, context line, spacer); By Group and Bales on row 3 (note, spacer).
+    const layout = formulaLayout(p)
+    expect([SECTION.summary, SECTION.spec, SECTION.groups, SECTION.bales, SECTION.notes].map((k) => layout[k].firstRow)).toEqual([5, 5, 4, 4, 2])
+    // So the first threshold (leaf maximum) is Contract Spec!B5, and that is the cell the Bales tab reads.
+    expect(formulaTextOf(p, SECTION.bales, 0, 'result')).toContain("'Contract Spec'!$B$5")
+    // The KPI strip is under the Summary table: formulas, calculated and cached
+    // with every other cell when the workbook is built (evaluatePayload).
+    evaluatePayload(p)
+    const summary = p.sections.find((s) => s.key === SECTION.summary)!
+    const kpi = summary.postlude!.find((r) => r.kind === 'kpi')!
+    const shown = kpi.cells.map((c) => (c != null && typeof c === 'object' ? c.v : c))
+    expect(shown.slice(0, 5)).toEqual(['Classed bales', 9, 'Lint lbs', 4435, 'Avg loan vs base ¢/lb'])
+    expect(shown[5]).toBeCloseTo(3, 6)
+    expect(kpi.cells.filter((c) => c != null && typeof c === 'object' && c.f != null)).toHaveLength(3)
+    // The Contract Spec tab is read by position: no filter buttons to sort it out from under the formulas.
+    expect(p.sections.find((s) => s.key === SECTION.spec)!.autoFilter).toBe(false)
+    // The qualifying-bales list: the same rule, its count and weight under the list.
+    const q = buildQualifyingBalesWorkbook({ cropYear: 2026, rows, factors: ['mic'], groupBy: 'overall', weighting: 'bales', filterSummary: 'x', contract: { id: 'VS', label: 'VS&Co', spec: VS_SPEC, view } })
+    expect(q.sections[0].prelude!.map((r) => r.kind)).toEqual(['title', 'text'])
+    expect(q.sections[0].postlude).toEqual([{ kind: 'kpi', cells: ['Bales', { v: 2, format: 'int' }, 'Lint lbs', { v: 980, format: 'lbs' }] }])
+    expect(q.sections[0].columns.find((c) => c.label === 'Class date')?.format).toBe('date')
+  })
+  it('the workbook builds under the layout contract, and the file carries the cached headline figures', async () => {
+    const wb = await buildExcelWorkbook(build())
+    expect(wb.worksheets.map((w: { name: string }) => w.name)).toEqual(['Summary', 'Contract Spec', 'By Group', 'Bales', 'Notes'])
+    const ws = wb.getWorksheet('Summary')
+    expect(ws.getCell('A4').value).toBe('Factor') // the header row
+    expect(ws.views[0]).toMatchObject({ state: 'frozen', ySplit: 4 })
+    let kpiRow = 0
+    ws.eachRow((row: { getCell: (n: number) => { value: unknown } }, n: number) => { if (row.getCell(1).value === 'Classed bales') kpiRow = n })
+    expect(kpiRow).toBeGreaterThan(4 + build().sections[0].rows.length) // under the table
+    expect(ws.getCell(`B${kpiRow}`).value).toMatchObject({ result: 9 })
+    expect(ws.getCell(`D${kpiRow}`).value).toMatchObject({ result: 4435 })
+    // Real dates on the Bales tab (class date is column L).
+    const classDate = wb.getWorksheet('Bales').getCell('L4').value
+    expect(classDate).toBeInstanceOf(Date)
   })
   it('without a contract: no spec tab, no result columns; the qualifying-bales workbook lists the two meeting bales', () => {
     const p = buildBaleQualityWorkbook({ cropYear: 2026, rows, factors: ['mic'], groupBy: 'overall', weighting: 'lbs', filterSummary: 'x', contract: null })

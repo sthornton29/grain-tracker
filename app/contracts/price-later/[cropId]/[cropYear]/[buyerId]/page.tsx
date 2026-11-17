@@ -103,18 +103,26 @@ export default async function PriceLaterPoolPage({
   const exportPayload: ExportPayload = {
     title,
     filters: filterSummary,
+    // The same four cards as the screen, with their second lines (the last one
+    // without the screen's "enter a price on the Marketing page" prompt — this
+    // file is read by people who cannot).
     summary: [
-      { label: 'Unpriced bushels', value: `${fmtInt(pool.bushels)} bu` },
-      { label: 'Loads', value: String(facts.loadCount) },
-      { label: 'Oldest delivery', value: facts.oldestDate ? fmtDate(facts.oldestDate) : '—' },
-      { label: "Value at today's assumed price", value: `${valueText} (unpriced)` },
+      { label: 'Unpriced bushels', value: `${fmtInt(pool.bushels)} bu`, tone: 'warning' },
+      { label: 'Loads', value: String(facts.loadCount), sub: pool.newestDate && pool.newestDate !== pool.oldestDate ? `through ${fmtDate(pool.newestDate)}` : undefined },
+      { label: 'Oldest delivery', value: facts.oldestDate ? fmtDate(facts.oldestDate) : '—', sub: 'priced first' },
+      {
+        label: "Value at today's assumed price",
+        value: valueText,
+        sub: facts.assumedPrice != null ? `unpriced · ${fmtUsd(facts.assumedPrice, 2)}/bu assumed` : 'unpriced · no assumed price yet',
+        tone: 'muted',
+      },
     ],
     sections: [{
       title: 'Price-later loads',
-      columns: [{ label: 'Date' }, { label: 'Ticket' }, { label: 'Bushels unpriced', align: 'right', format: 'bu' }],
+      columns: [{ label: 'Date', format: 'date' }, { label: 'Ticket' }, { label: 'Bushels unpriced', align: 'right', format: 'bu3' }],
       rows: [
-        ...lines.map(({ row, splitNote }) => [fmtDate(row.load.date), `${row.load.ticket_number ?? ''}${splitNote ? ` (${splitNote})` : ''}`, row.alloc.bushels]),
-        ['Total', `${facts.loadCount} loads`, pool.bushels],
+        ...lines.map(({ row, splitNote }) => [row.load.date, `${row.load.ticket_number ?? ''}${splitNote ? ` (${splitNote})` : ''}`, row.alloc.bushels]),
+        ['Total', `${facts.loadCount} load${facts.loadCount === 1 ? '' : 's'}`, pool.bushels],
       ],
       rowMeta: [...lines.map(() => 'data' as const), 'total'],
     }],

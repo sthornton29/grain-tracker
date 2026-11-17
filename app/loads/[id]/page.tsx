@@ -8,7 +8,7 @@ import { fmtDate } from '@/lib/format-date'
 import LoadAttachments from '@/components/load-attachments'
 import LoadPdfBar from './load-pdf-bar'
 import DeleteLoadButton from './delete-load-button'
-import type { ExportPayload, ExportSection } from '@/lib/exports'
+import type { ExportCell, ExportPayload, ExportSection, NumFmt, SummaryCard } from '@/lib/exports'
 import { describeSale, fetchLoadSales, saleAllocations, saleKind, type LoadSale, type SaleAllocation } from '@/lib/load-sales'
 import { spotPriceChip } from '@/lib/spot-price'
 
@@ -192,12 +192,12 @@ export default async function LoadDetailPage({ params }: { params: { id: string 
   const saleKindOf = saleKind(allocs, load)
   const saleDescription = describeSale(allocs, contractNumberOf, load)
   const buyerNameText = load.to_buyer?.name ?? null
-  /** One line per part for the export: "894 bu · Contract #2002960604-10" / "913 bu · Spot · est. $13.39 (…)". */
-  const partText = (a: SaleAllocation): string => {
-    const bu = `${fmt(a.bushels)} bu`
-    if (a.saleType === 'contract') return `${bu} · Contract #${contractNumberOf(a.contractId ?? '') ?? '?'}`
-    if (a.saleType === 'spot') return `${bu} · Spot · ${a.sale ? spotPriceChip(a.sale, buyerNameText) : 'no price yet'}`
-    return `${bu} · Price later`
+  /** How one part was sold, for the export's Sale parts table (its bushels sit
+   *  beside it as a number): "Contract #2002960604-10" / "Spot · est. $13.39 (…)". */
+  const partLabel = (a: SaleAllocation): string => {
+    if (a.saleType === 'contract') return `Contract #${contractNumberOf(a.contractId ?? '') ?? '?'}`
+    if (a.saleType === 'spot') return `Spot · ${a.sale ? spotPriceChip(a.sale, buyerNameText) : 'no price yet'}`
+    return 'Price later'
   }
 
   // Discrepancy (paid only): our dry bu vs their settled net bu, flagged > 1%
@@ -222,42 +222,53 @@ export default async function LoadDetailPage({ params }: { params: { id: string 
   const dateTime = `${fmtDate(load.date)}${load.time ? ` · ${load.time.slice(0, 5)}` : ''}`
 
   // ---- Export payload (jsPDF / Excel), mirroring the on-screen document ----
-  const KV: ExportSection['columns'] = [{ label: 'Field' }, { label: 'Value', align: 'right' }]
+  // Item / Value tables. A number stays a number (each cell carries its own
+  // format, the unit is in the label), a date is the raw ISO day, and a
+  // missing value is a blank — never a dash standing in for one.
+  const KV: ExportSection['columns'] = [{ label: 'Item' }, { label: 'Value', align: 'right' }]
+  const num = (n: number | null | undefined, format: NumFmt): ExportCell =>
+    n == null || !Number.isFinite(Number(n)) ? '' : { v: Number(n), format }
+  const noDash = (s: string): string => (s === '—' ? '' : s)
+  const saleCell: ExportCell = saleKindOf === 'unassigned' ? { v: saleDescription, tone: 'warning' } : saleDescription
   const sections: ExportSection[] = []
   sections.push({
     title: 'Load & Logistics',
     columns: KV,
     rows: [
-      ['Date / time', dateTime],
-      ['Ticket #', ticket ?? '—'],
-      ...(buyerTicket && buyerTicket !== ticket ? [["Buyer's ticket #", buyerTicket] as (string | number)[]] : []),
-      ['Truck', truckExportLabel(load) || '—'],
-      ['Crop', load.crop?.name ?? '—'],
-      ['Crop year', load.crop_year != null ? String(load.crop_year) : '—'],
-      ['From', fromText],
-      ['To', toText],
-      ['Contract', load.contract ? `#${load.contract.contract_number}` : '—'],
-      ...(load.to_type === 'buyer' ? [['Sale', saleDescription || '—'] as (string | number)[]] : []),
+      ['Date', { v: load.date, format: 'date' }],
+      ...(load.time ? [['Time', load.time.slice(0, 5)] as ExportCell[]] : []),
+      ['Ticket #', ticket ?? ''],
+      ...(buyerTicket && buyerTicket !== ticket ? [["Buyer's ticket #", buyerTicket] as ExportCell[]] : []),
+      ['Truck', truckExportLabel(load)],
+      ['Crop', load.crop?.name ?? ''],
+      ['Crop year', load.crop_year != null ? String(load.crop_year) : ''],
+      ['From', noDash(fromText)],
+      ['To', noDash(toText)],
+      ['Contract', load.contract ? `#${load.contract.contract_number}` : ''],
+      ...(load.to_type === 'buyer' ? [['Sale', saleCell] as ExportCell[]] : []),
     ],
   })
   sections.push({
     title: 'Weights & Bushels',
     columns: KV,
     rows: [
-      ['Gross (lb)', fmt(load.gross_weight, 0)],
-      ['Tare (lb)', fmt(load.tare_weight, 0)],
-      ['Net (lb)', fmt(load.net_weight, 0)],
-      ['Moisture', load.moisture != null ? `${load.moisture}%` : '—'],
-      ['Test weight', load.test_weight != null ? `${load.test_weight} lb/bu` : '—'],
-      ['Wet bushels', fmt(wetBushels)],
-      ['Dry bushels', `${fmt(dryBushels)}${load.dry_bushels_override != null ? ' (manual override)' : ''}`],
+      ['Gross (lb)', num(load.gross_weight, 'lbs')],
+      ['Tare (lb)', num(load.tare_weight, 'lbs')],
+      ['Net (lb)', num(load.net_weight, 'lbs')],
+      ['Moisture (%)', num(load.moisture, 'dec1')],
+      ['Test weight (lb/bu)', num(load.test_weight, 'dec1')],
+      ['Wet bushels', num(wetBushels, 'bu')],
+      [load.dry_bushels_override != null ? 'Dry bushels (manual override)' : 'Dry bushels', num(dryBushels, 'bu')],
     ],
   })
   if (splits.length > 0) {
     sections.push({
       title: `Split across ${splits.length} fields`,
-      columns: [{ label: 'Field' }, { label: 'Net lb', align: 'right' }, { label: '%', align: 'right' }, { label: 'Wet bu', align: 'right' }, { label: 'Dry bu', align: 'right' }],
-      rows: splits.map((s) => [s.field?.name_or_number ?? '—', fmt(s.net_weight, 0), `${s.percentage.toFixed(1)}%`, fmt(s.wet_bushels), fmt(s.dry_bushels)]),
+      columns: [
+        { label: 'Field' }, { label: 'Net (lb)', align: 'right', format: 'lbs' }, { label: '% of load', align: 'right', format: 'pct1' },
+        { label: 'Wet bu', align: 'right', format: 'bu' }, { label: 'Dry bu', align: 'right', format: 'bu' },
+      ],
+      rows: splits.map((s) => [s.field?.name_or_number ?? '', num(s.net_weight, 'lbs'), num(s.percentage, 'pct1'), num(s.wet_bushels, 'bu'), num(s.dry_bushels, 'bu')]),
     })
   }
   if (load.to_type === 'buyer') {
@@ -265,12 +276,19 @@ export default async function LoadDetailPage({ params }: { params: { id: string 
       title: 'Sale',
       columns: KV,
       rows: [
-        ['Sold as', saleDescription || '—'],
-        ['Buyer', load.to_buyer?.name ?? '—'],
-        ...allocs.map((a, i): (string | number)[] => [`Part ${i + 1}`, partText(a)]),
-        ...(load.contract?.delivery_location?.name ? [['Delivery location', load.contract.delivery_location.name] as (string | number)[]] : []),
+        ['Sold as', saleCell],
+        ['Buyer', load.to_buyer?.name ?? ''],
+        ...(load.contract?.delivery_location?.name ? [['Delivery location', load.contract.delivery_location.name] as ExportCell[]] : []),
       ],
     })
+    // One line per part, as on screen: how it was sold, and its bushels as a number.
+    if (allocs.length > 0) {
+      sections.push({
+        title: 'Sale parts',
+        columns: [{ label: 'Sold as' }, { label: 'Bushels', align: 'right', format: 'bu' }],
+        rows: allocs.map((a) => [partLabel(a), a.bushels]),
+      })
+    }
   }
   sections.push({
     title: 'Payment',
@@ -279,36 +297,52 @@ export default async function LoadDetailPage({ params }: { params: { id: string 
       paymentState === 'na'
         ? [['Status', 'Stored in bin — not a buyer sale']]
         : paymentState === 'unpaid'
-          ? [['Status', 'Unpaid — no settlement matched to this ticket']]
+          ? [['Status', { v: 'Unpaid — no settlement matched to this ticket', tone: 'warning' }]]
           : paymentState === 'ambiguous'
             ? [
-                ['Status', 'Ambiguous — multiple loads share this ticket'],
-                ['Settlement #', paymentLine?.settlement?.settlement_number ?? '—'],
+                ['Status', { v: 'Ambiguous — multiple loads share this ticket', tone: 'warning' }],
+                ['Settlement #', paymentLine?.settlement?.settlement_number ?? ''],
               ]
             : [
-                ['Status', 'Paid'],
-                ['Settlement #', paymentLine?.settlement?.settlement_number ?? '—'],
-                ['Settlement date', paymentLine?.settlement?.settlement_date ? fmtDate(paymentLine.settlement.settlement_date) : '—'],
-                ['Buyer', paymentLine?.settlement?.buyer?.name ?? '—'],
-                ['Their net bu', fmt(paymentLine?.net_bushels)],
-                ['Our dry bu', fmt(ourBu)],
-                ['Diff', diffPct != null ? `${diffPct >= 0 ? '+' : ''}${diffPct.toFixed(2)}%${diffFlag ? ' (over 1%)' : ''}` : '—'],
-                ['Gross revenue', usd(paymentLine?.gross_revenue)],
-                ['Discounts', usd(paymentLine?.discounts)],
-                ['Net revenue', usd(paymentLine?.net_revenue)],
-                ['$ / bu', fmt(paymentLine?.price_per_bushel, 4)],
+                ['Status', { v: 'Paid', tone: 'favorable' }],
+                ['Settlement #', paymentLine?.settlement?.settlement_number ?? ''],
+                ['Settlement date', paymentLine?.settlement?.settlement_date ? { v: paymentLine.settlement.settlement_date, format: 'date' } : ''],
+                ['Buyer', paymentLine?.settlement?.buyer?.name ?? ''],
+                ['Their net bu', num(paymentLine?.net_bushels, 'bu')],
+                ['Our dry bu', num(ourBu, 'bu')],
+                // Their bushels against ours, red past 1% as on screen.
+                [
+                  diffFlag ? 'Difference, theirs vs ours (over 1%)' : 'Difference, theirs vs ours',
+                  diffPct != null ? { v: diffPct, format: 'pct1', ...(diffFlag ? { tone: 'unfavorable' as const } : {}) } : '',
+                ],
+                ['Gross revenue', num(paymentLine?.gross_revenue, 'usd2')],
+                ['Discounts', num(paymentLine?.discounts, 'usd2')],
+                ['Net revenue', num(paymentLine?.net_revenue, 'usd2')],
+                ['Price ($/bu)', num(paymentLine?.price_per_bushel, 'price4')],
               ],
   })
   sections.push({
     title: 'Attachments',
     columns: KV,
-    rows: [['Files on file', String(attachmentCount)]],
+    rows: [['Files on file', { v: attachmentCount, format: 'int' }]],
   })
 
+  const paymentCard: SummaryCard =
+    paymentState === 'paid' ? { label: 'Payment', value: 'Paid', tone: 'favorable' }
+    : paymentState === 'unpaid' ? { label: 'Payment', value: 'Unpaid', tone: 'warning' }
+    : paymentState === 'ambiguous' ? { label: 'Payment', value: 'Ambiguous', tone: 'warning' }
+    : { label: 'Payment', value: 'Stored' }
   const payload: ExportPayload = {
     title: ticket ? `Load — Ticket #${ticket}` : `Load — ${fmtDate(load.date)}`,
     filters: [load.crop?.name, dateTime, load.crop_year != null ? `${load.crop_year} crop` : null].filter(Boolean).join(' · '),
     filename: `load-${ticket ?? load.date}`,
+    // The four cards at the top of the page.
+    summary: [
+      { label: 'Dry bushels', value: fmt(dryBushels) },
+      { label: 'Net weight', value: `${fmt(load.net_weight, 0)} lb` },
+      { label: 'Crop', value: load.crop?.name ?? '—' },
+      paymentCard,
+    ],
     singleSheet: true,
     sections,
   }

@@ -17,7 +17,7 @@ import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { fmtPrice } from '@/lib/hedging'
-import { formatNumber, type ExportPayload } from '@/lib/exports'
+import { formatNumber, type ExportPayload, type ExportCell, type RowKind } from '@/lib/exports'
 import {
   sensitivityTable, harvestContractLabel,
   projectInsuranceIndemnities, resolveHarvestPriceByCrop, actualYieldByCropFromLoads,
@@ -41,7 +41,7 @@ import type { RmaLookupResult } from '@/app/api/rma-price-discovery/route'
 import { harvestTierLabel } from '@/lib/insurance-price-rows'
 import {
   SummaryCards, EmptyState, ReportHeader, ReportFilterBar, FilterField, fmtUsd, fmtNum, fmtInt, signedTone, toneText,
-  theadCls, grandTotalRowCls, selectCls, filterSummaryOf, cropYearLabel, type SummaryCardData,
+  theadCls, grandTotalRowCls, selectCls, filterSummaryOf, cropYearLabel, type SummaryCardData, type Tone,
 } from '@/components/reports/report-kit'
 import { useReportCropYear } from '@/lib/report-filters'
 import type {
@@ -92,6 +92,15 @@ type Props = {
 }
 
 const bu = (n: number) => n.toLocaleString(undefined, { maximumFractionDigits: 0 })
+
+// Where the audit's yield basis came from, in words (the audit table and its export).
+const YIELD_SOURCE_LABEL: Record<YieldBasisAudit['source'], string> = {
+  actual_practice: 'actual · practice breakout',
+  expected_practice: 'expected · per-practice',
+  expected_blended: 'expected · blended',
+  actual_crop: 'actual · crop loads',
+  mean_aph: 'mean APH',
+}
 
 export default function CropInsuranceClaimsReport({ onPayloadChange, headerActions }: Props) {
   const supabase = useMemo(() => createClient(), [])
@@ -529,11 +538,15 @@ export default function CropInsuranceClaimsReport({ onPayloadChange, headerActio
   ], [totals])
 
   // Net-P&L color: green well-positive, red well-negative, amber near breakeven.
-  function pnlClass(net: number, premium: number): string {
+  // One rule for the screen (pnlClass) and the export (the cell's tone).
+  function pnlTone(net: number, premium: number): Tone {
     const tol = Math.max(50, premium * 0.05)
-    if (net > tol) return toneText('favorable')
-    if (net < -tol) return toneText('unfavorable')
-    return toneText('warning')
+    if (net > tol) return 'favorable'
+    if (net < -tol) return 'unfavorable'
+    return 'warning'
+  }
+  function pnlClass(net: number, premium: number): string {
+    return toneText(pnlTone(net, premium))
   }
 
   const cropName = (id: string) => cropById.get(id)?.name ?? '—'
@@ -571,60 +584,97 @@ export default function CropInsuranceClaimsReport({ onPayloadChange, headerActio
 
   // ----- Export payload -----
   function buildExportPayload(): ExportPayload {
-    const entityName = entityId
-      ? entities.find((e) => e.id === entityId)?.name ?? ''
-      : viewerAllEntitiesLabel(viewer, entities) ?? ''
-    const filters = [`Crop year: ${cropYear || '—'}`, entityName ? `Entity: ${entityName}` : 'All entities'].join(' · ')
+    // The same line the report header shows.
+    const filters = filterSummaryOf(
+      cropYear === '' ? null : cropYearLabel(cropYear),
+      entityId ? (entities.find((e) => e.id === entityId)?.name ?? 'Entity') : (viewerAllEntitiesLabel(viewer, entities) ?? 'All Entities'),
+    )
+    // Dollar cells colored as on screen: an indemnity that pays is green and a
+    // $0 one is muted; the net is green / red / amber by the breakeven rule.
+    const paid = (n: number): ExportCell => ({ v: Math.round(n), tone: signedTone(n) })
+    const net = (n: number, premium: number): ExportCell => ({ v: Math.round(n), tone: pnlTone(n, premium) })
+    // A crop subtotal or the grand total: acres and the dollar columns only.
+    const sumRow = (label: string, s: CropSub): ExportCell[] => [
+      label, '', '', '', '', '', '', '', '', '', s.acres,
+      Math.round(s.revenueGuarantee), Math.round(s.expectedRevenue), paid(s.baseIndemnity),
+      paid(s.scoIndemnity), paid(s.ecoIndemnity), paid(s.staxMcoIndemnity), paid(s.totalIndemnity),
+      Math.round(s.premium), net(s.netPnl, s.premium),
+    ]
+    // Same rows as the screen: the policies grouped by crop, a subtotal under
+    // any crop with more than one policy, then the total. A policy without an
+    // endorsement leaves that column blank (the screen's N/A) — $0 means the
+    // endorsement is there and pays nothing.
+    const rows: ExportCell[][] = []
+    const rowMeta: RowKind[] = []
+    for (const g of cropGroups) {
+      for (const c of g.rows) {
+        const p = c.policy
+        const area = isAreaPlan(p.plan_type)
+        rows.push([
+          cropName(p.crop_id), countyName(p.county_id),
+          area ? `${PLAN_TYPE_SHORT[p.plan_type]} (county-triggered)` : PLAN_TYPE_SHORT[p.plan_type],
+          PRACTICE_LABEL[p.practice ?? 'non_irrigated'],
+          Math.round(Number(p.coverage_level) * 100), area ? '' : Number(p.aph_yield), Number(p.projected_price),
+          c.harvest ? Number(c.harvest.price.toFixed(4)) : '', c.harvest ? harvestTier(c.harvest).text : '',
+          area ? '' : Number(c.assumedYield.toFixed(1)), Number(p.insured_acres),
+          Math.round(c.comp.base.revenueGuarantee), Math.round(c.comp.base.expectedRevenue), paid(c.comp.base.indemnity),
+          c.comp.sco ? paid(c.comp.sco.indemnity) : '', c.comp.eco ? paid(c.comp.eco.indemnity) : '',
+          c.comp.stax || c.comp.mco ? paid((c.comp.stax?.indemnity ?? 0) + (c.comp.mco?.indemnity ?? 0)) : '',
+          c.comp.warnings.length > 0 ? { v: Math.round(c.comp.totalIndemnity), tone: 'unfavorable' } : paid(c.comp.totalIndemnity),
+          Math.round(c.comp.premiumPaid), net(c.comp.netPnl, c.comp.premiumPaid),
+        ])
+        rowMeta.push('data')
+      }
+      if (g.rows.length > 1) {
+        rows.push(sumRow(`${cropName(g.cropId)} subtotal`, subOf(g.rows)))
+        rowMeta.push('subtotal')
+      }
+    }
+    rows.push(sumRow('Total', totals))
+    rowMeta.push('total')
     const sections: ExportPayload['sections'] = []
     sections.push({
       title: 'Estimated Indemnity by Policy',
+      // Crop, county, plan and practice together name a policy.
+      freezeColumns: 4,
       columns: [
         { label: 'Crop' }, { label: 'County' }, { label: 'Plan' }, { label: 'Practice' }, { label: 'Coverage', align: 'right', format: 'pct0' },
-        { label: 'APH', align: 'right', format: 'yield' }, { label: 'Proj $', align: 'right', format: 'price' }, { label: 'Harvest $', align: 'right', format: 'price' },
-        { label: 'Assumed Yld', align: 'right', format: 'yield' }, { label: 'Acres', align: 'right', format: 'acres' },
+        { label: 'APH', align: 'right', format: 'yield' }, { label: 'Projected Price', align: 'right', format: 'price' },
+        { label: 'Harvest Price', align: 'right', format: 'price' }, { label: 'Harvest Price Basis' },
+        { label: 'Assumed Yield', align: 'right', format: 'yield' }, { label: 'Acres', align: 'right', format: 'acres' },
         { label: 'Revenue Guarantee', align: 'right', format: 'usd0' }, { label: 'Expected Revenue', align: 'right', format: 'usd0' },
         { label: 'Base Indemnity', align: 'right', format: 'usd0' }, { label: 'SCO', align: 'right', format: 'usd0' }, { label: 'ECO', align: 'right', format: 'usd0' },
         { label: 'STAX/MCO', align: 'right', format: 'usd0' },
         { label: 'Total Indemnity', align: 'right', format: 'usd0' }, { label: 'Premium Paid', align: 'right', format: 'usd0' }, { label: 'Net Ins. P&L', align: 'right', format: 'usd0' },
       ],
-      rows: computed.map((c) => [
-        cropName(c.policy.crop_id), countyName(c.policy.county_id),
-        isAreaPlan(c.policy.plan_type) ? `${PLAN_TYPE_SHORT[c.policy.plan_type]} (county-triggered)` : PLAN_TYPE_SHORT[c.policy.plan_type],
-        PRACTICE_LABEL[c.policy.practice ?? 'non_irrigated'],
-        Math.round(Number(c.policy.coverage_level) * 100), isAreaPlan(c.policy.plan_type) ? '' : Number(c.policy.aph_yield), Number(c.policy.projected_price),
-        Number((c.harvest?.price ?? 0).toFixed(4)), isAreaPlan(c.policy.plan_type) ? '' : Number(c.assumedYield.toFixed(1)), Number(c.policy.insured_acres),
-        Math.round(c.comp.base.revenueGuarantee), Math.round(c.comp.base.expectedRevenue), Math.round(c.comp.base.indemnity),
-        Math.round(c.comp.sco?.indemnity ?? 0), Math.round(c.comp.eco?.indemnity ?? 0),
-        Math.round((c.comp.stax?.indemnity ?? 0) + (c.comp.mco?.indemnity ?? 0)),
-        Math.round(c.comp.totalIndemnity), Math.round(c.comp.premiumPaid), Math.round(c.comp.netPnl),
-      ]),
-      rowMeta: computed.map(() => 'data' as const),
+      rows,
+      rowMeta,
+      // The screen's own notice, for whoever this is forwarded to.
+      postlude: [
+        { kind: 'text', cells: ['Estimated: based on current yield assumptions and futures prices. Final amounts are determined by RMA after harvest.'] },
+        { kind: 'text', cells: ['Net Ins. P&L is total indemnity minus premium paid: green when insurance pays more than it cost, red when it pays less.'] },
+      ],
     })
-    // Totals as a final 'total' row appended to the same section.
-    sections[0].rows.push([
-      'Total', '', '', '', '', '', '', '', '', Math.round(totals.acres),
-      Math.round(totals.revenueGuarantee), Math.round(totals.expectedRevenue), Math.round(totals.baseIndemnity),
-      Math.round(totals.scoIndemnity), Math.round(totals.ecoIndemnity), Math.round(totals.staxMcoIndemnity), Math.round(totals.totalIndemnity),
-      Math.round(totals.premium), Math.round(totals.netPnl),
-    ])
-    sections[0].rowMeta!.push('total')
     if (auditMode && auditRows.length > 0) {
       sections.push({
-        title: 'Audit — independent re-computation (production vs audit per leg; flag > $1/acre)',
+        // The audit view only (?audit=1): each leg as the report has it, then
+        // as the second calculation has it; a row is flagged past $1/acre.
+        title: 'Audit',
+        freezeColumns: 4,
         columns: [
           { label: 'Crop' }, { label: 'County' }, { label: 'Plan' }, { label: 'Practice' },
-          { label: 'Cov', align: 'right', format: 'pct0' }, { label: 'APH', align: 'right', format: 'yield' },
-          { label: 'Proj $', align: 'right', format: 'price' }, { label: 'Harvest $', align: 'right', format: 'price' }, { label: 'Harvest src' },
-          { label: 'Yield basis', align: 'right', format: 'yield' }, { label: 'Yield src' },
-          { label: 'County est', align: 'right', format: 'yield' }, { label: 'County src' },
-          { label: 'Guarantee', align: 'right', format: 'usd0' }, { label: 'Exp revenue', align: 'right', format: 'usd0' },
-          { label: 'Base prod', align: 'right', format: 'usd0' }, { label: 'Base audit', align: 'right', format: 'usd0' },
-          { label: 'SCO prod', align: 'right', format: 'usd0' }, { label: 'SCO audit', align: 'right', format: 'usd0' },
-          { label: 'ECO prod', align: 'right', format: 'usd0' }, { label: 'ECO audit', align: 'right', format: 'usd0' },
-          { label: 'STAX prod', align: 'right', format: 'usd0' }, { label: 'STAX audit', align: 'right', format: 'usd0' },
-          { label: 'MCO prod', align: 'right', format: 'usd0' }, { label: 'MCO audit', align: 'right', format: 'usd0' },
-          { label: 'Total prod', align: 'right', format: 'usd0' }, { label: 'Total audit', align: 'right', format: 'usd0' },
-          { label: 'Premium', align: 'right', format: 'usd0' }, { label: 'Max Δ/ac', align: 'right', format: 'usd2' },
+          { label: 'Coverage', align: 'right', format: 'pct0' }, { label: 'APH', align: 'right', format: 'yield' },
+          { label: 'Projected Price', align: 'right', format: 'price' }, { label: 'Harvest Price', align: 'right', format: 'price' }, { label: 'Harvest Price Basis' },
+          { label: 'Yield Basis', align: 'right', format: 'yield' }, { label: 'Yield Source' },
+          { label: 'County Yield Est.', align: 'right', format: 'yield' }, { label: 'County Yield Source' },
+          { label: 'Revenue Guarantee', align: 'right', format: 'usd0' }, { label: 'Expected Revenue', align: 'right', format: 'usd0' },
+          { label: 'Base (report)', align: 'right', format: 'usd0' }, { label: 'Base (audit)', align: 'right', format: 'usd0' },
+          { label: 'SCO (report)', align: 'right', format: 'usd0' }, { label: 'SCO (audit)', align: 'right', format: 'usd0' },
+          { label: 'ECO (report)', align: 'right', format: 'usd0' }, { label: 'ECO (audit)', align: 'right', format: 'usd0' },
+          { label: 'STAX (report)', align: 'right', format: 'usd0' }, { label: 'STAX (audit)', align: 'right', format: 'usd0' },
+          { label: 'MCO (report)', align: 'right', format: 'usd0' }, { label: 'MCO (audit)', align: 'right', format: 'usd0' },
+          { label: 'Total (report)', align: 'right', format: 'usd0' }, { label: 'Total (audit)', align: 'right', format: 'usd0' },
+          { label: 'Premium Paid', align: 'right', format: 'usd0' }, { label: 'Largest Difference ($/ac)', align: 'right', format: 'usd2' },
           { label: 'Invariants' }, { label: 'Status' },
         ],
         rows: auditRows.map(({ c, yieldBasis, audit, cmp, invariants }) => {
@@ -634,8 +684,9 @@ export default function CropInsuranceClaimsReport({ onPayloadChange, headerActio
             cropName(p.crop_id), countyName(p.county_id), PLAN_TYPE_SHORT[p.plan_type], PRACTICE_LABEL[p.practice ?? 'non_irrigated'],
             Math.round(Number(p.coverage_level) * 100), isAreaPlan(p.plan_type) ? '' : Number(p.aph_yield),
             Number(p.projected_price), Number(c.base.harvestPrice.toFixed(4)), `${harvestTier(c.harvest).text}${c.harvest?.stale ? ' (not current)' : ''}`,
-            Number(c.assumedYield.toFixed(1)), yieldBasis.source,
-            audit.countyEstimate ? Number(audit.countyEstimate.value.toFixed(1)) : '', audit.countyEstimate?.source ?? '',
+            Number(c.assumedYield.toFixed(1)), YIELD_SOURCE_LABEL[yieldBasis.source],
+            audit.countyEstimate ? Number(audit.countyEstimate.value.toFixed(1)) : '',
+            audit.countyEstimate ? COUNTY_SOURCE_NOTE[audit.countyEstimate.source] ?? audit.countyEstimate.source : '',
             Math.round(c.comp.base.revenueGuarantee), Math.round(c.comp.base.expectedRevenue),
             Math.round(c.comp.base.indemnity), Math.round(audit.base),
             c.comp.sco ? Math.round(c.comp.sco.indemnity) : '', audit.sco != null ? Math.round(audit.sco) : '',
@@ -656,7 +707,7 @@ export default function CropInsuranceClaimsReport({ onPayloadChange, headerActio
       summary: [
         { label: 'Total Indemnity', value: formatNumber(totals.totalIndemnity, 'usd0'), tone: totals.totalIndemnity > 0 ? 'favorable' : 'muted' },
         { label: 'Premium Paid', value: formatNumber(totals.premium, 'usd0') },
-        { label: 'Net Ins. P&L', value: formatNumber(totals.netPnl, 'usd0'), tone: signedTone(totals.netPnl) },
+        { label: 'Net Ins. P&L', value: formatNumber(totals.netPnl, 'usd0'), tone: signedTone(totals.netPnl), sub: 'Total indemnity minus premium paid' },
         { label: 'Insured Acres', value: formatNumber(totals.acres, 'acres') },
       ],
       sections,
@@ -984,13 +1035,7 @@ export default function CropInsuranceClaimsReport({ onPayloadChange, headerActio
 
           {/* ---------- AUDIT (?audit=1): independent re-computation ---------- */}
           {auditMode && auditRows.length > 0 && (() => {
-            const yieldSrcLabel: Record<YieldBasisAudit['source'], string> = {
-              actual_practice: 'actual · practice breakout',
-              expected_practice: 'expected · per-practice',
-              expected_blended: 'expected · blended',
-              actual_crop: 'actual · crop loads',
-              mean_aph: 'mean APH',
-            }
+            const yieldSrcLabel = YIELD_SOURCE_LABEL
             const legCell = (prod: number | null, aud: number | null, acres: number) => {
               if (prod == null && aud == null) return <td className="px-2 py-1 text-right text-slate-300">N/A</td>
               const delta = Math.abs((prod ?? 0) - (aud ?? 0)) / (acres > 0 ? acres : 1)

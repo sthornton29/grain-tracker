@@ -18,7 +18,7 @@ import EntityFilter from '@/components/entity-filter'
 import { useViewerScope, entityOptionsFor, viewerAllEntitiesLabel } from '@/lib/use-viewer-scope'
 import AvgYieldHeader from '@/components/reports/avg-yield-header'
 import ExportBar from '@/components/export-bar'
-import { formatNumber, type ExportPayload } from '@/lib/exports'
+import { formatNumber, type ExportCell, type ExportPayload } from '@/lib/exports'
 import {
   SummaryCards,
   EmptyState,
@@ -323,19 +323,26 @@ export default function SeasonSummaryPage() {
 
   // Export mirrors the on-screen table (real numbers + shared formatting).
   function buildPayload(): ExportPayload {
-    const rows: Array<Array<string | number>> = []
-    const rowMeta: Array<'data' | 'subtotal' | 'total'> = []
+    const rows: ExportCell[][] = []
+    const rowMeta: Array<'data' | 'total'> = []
+    const cottonSection = cottonOn && cottonRows.length > 0 ? cottonSectionExport(cottonRows, `Cotton — ${year}`) : null
     for (const r of byCrop) {
       rows.push([
-        r.isCotton ? `${r.cropName} (lbs — see Cotton Yields)` : r.cropName, r.fullSeasonAcres, r.doubleCropAcres, r.totalAcres,
+        r.isCotton ? `${r.cropName} (lbs of lint${cottonSection ? ` — see ${cottonSection.title}` : ''})` : r.cropName, r.fullSeasonAcres, r.doubleCropAcres, r.totalAcres,
         r.irrigatedAcres > 0 ? r.irrigatedAcres : '', r.drylandAcres > 0 ? r.drylandAcres : '',
         r.isCotton ? '' : r.dryBu, !r.isCotton ? (seasonYieldOf(r) ?? '') : '',
       ]); rowMeta.push('data')
-      // Full-season / Double-crop sub-rows mirror the screen.
+      // Full-season / Double-crop sub-rows mirror the screen: the breakdown of
+      // the crop row above them, in its muted type — never a subtotal (the crop
+      // row already is their sum).
       if (r.cohorts && !r.isCotton) {
         for (const c of r.cohorts) {
-          rows.push([`  ${c.label}`, c.cropping === 'full_season' ? c.acres : '', c.cropping === 'double_crop' ? c.acres : '', c.acres, '', '', c.dryBu, seasonYieldOf(c) ?? ''])
-          rowMeta.push('subtotal')
+          const m = (v: string | number): ExportCell => (v === '' ? '' : { v, tone: 'muted' })
+          rows.push([
+            m(`  ${c.label}`), m(c.cropping === 'full_season' ? c.acres : ''), m(c.cropping === 'double_crop' ? c.acres : ''), m(c.acres),
+            '', '', m(c.dryBu), m(seasonYieldOf(c) ?? ''),
+          ])
+          rowMeta.push('data')
         }
       }
     }
@@ -343,13 +350,19 @@ export default function SeasonSummaryPage() {
     return {
       title: 'Season Summary',
       filters: filterSummary,
+      // The same four cards as the screen, with their second lines.
       summary: [
-        { label: 'Total acres', value: formatNumber(totals.acres, 'acres') },
-        { label: 'Dry bushels', value: formatNumber(totals.dryBu, 'bu') },
-        { label: 'Weighted yield', value: weightedYield != null ? formatNumber(weightedYield, 'yield') : '—' },
-        { label: '% harvested', value: pctHarvested != null ? formatNumber(pctHarvested, 'pct0') : '—' },
+        { label: 'Total acres', value: formatNumber(totals.acres, 'acres'), sub: `${formatNumber(totals.irrigated, 'acres')} irrigated · ${formatNumber(totals.dryland, 'acres')} dryland` },
+        { label: 'Dry bushels', value: formatNumber(totals.dryBu, 'bu'), sub: 'Harvested fields only' },
+        { label: 'Weighted yield', value: weightedYield != null ? `${formatNumber(weightedYield, 'yield')} bu/ac` : '—' },
+        {
+          label: '% harvested', value: pctHarvested != null ? formatNumber(pctHarvested, 'pct0') : '—',
+          sub: `${formatNumber(harvestedAcres, 'acres')} of ${formatNumber(totals.acres, 'acres')} acres`,
+          tone: pctHarvested != null && pctHarvested >= 100 ? 'favorable' : 'neutral',
+        },
       ],
       sections: [{
+        title: 'By Crop',
         columns: [
           { label: 'Crop' },
           { label: 'Full-season ac', align: 'right', format: 'acres' }, { label: 'Double-crop ac', align: 'right', format: 'acres' },
@@ -360,7 +373,7 @@ export default function SeasonSummaryPage() {
         rows,
         rowMeta,
       },
-      ...(cottonOn && cottonRows.length > 0 ? [cottonSectionExport(cottonRows, `Cotton — ${year}`)] : []),
+      ...(cottonSection ? [cottonSection] : []),
       ...(checkoffRows.length > 0 ? [{
         title: 'Checkoff paid',
         columns: [

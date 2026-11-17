@@ -29,8 +29,8 @@ import {
   theadCls, stickyColCls, stickyColHeadCls, grandTotalRowCls,
   fmtInt, fmtUsd, fmtPct, fmtNum,
 } from '@/components/reports/report-format'
-import type { ExportPayload } from '@/lib/exports'
-import { CONTRACT_TYPE_LABEL, effectiveContractType, type ContractType, type PricingStatus } from '@/lib/contracts'
+import type { ExportCell, ExportPayload } from '@/lib/exports'
+import { CONTRACT_TYPE_LABEL, PRICING_STATUS_LABEL, effectiveContractType, type ContractType, type PricingStatus } from '@/lib/contracts'
 import { CONTRACT_TYPE_FILTER_LABEL, type ContractTypeFilter } from '@/lib/contract-filters'
 import { parseContractMonth } from '@/lib/hedging'
 import { blendedElectedPrice, cumulativePricedPct, effectivePriceWalk, missingPremiumRows } from '@/lib/seed-contracts'
@@ -518,41 +518,66 @@ export default async function ContractsPage({
   const contractsExportPayload: ExportPayload = {
     title: 'Contract Tracker',
     filters: filterSummary,
+    // The same cards as the screen (with their second lines), then the sold
+    // vs unsold bar as figures.
     summary: [
-      { label: 'Contracted', value: `${fmtInt(totals.contracted)} bu` },
-      { label: 'Delivered', value: `${fmtInt(totals.delivered)} bu` },
-      { label: 'Remaining', value: `${fmtInt(totals.remaining)} bu` },
-      { label: 'Delivered but unpaid', value: `${fmtInt(totals.unpaidBu)} bu` },
+      { label: 'Contracted', value: `${fmtInt(totals.contracted)} bu`, sub: `${rows.length} contract${rows.length === 1 ? '' : 's'}${spotRows.length > 0 ? ` · ${spotRows.length} spot` : ''}${poolRows.length > 0 ? ` · ${poolRows.length} price later` : ''}` },
+      { label: 'Delivered', value: `${fmtInt(totals.delivered)} bu`, sub: `${fmtInt(totals.loads)} load${totals.loads === 1 ? '' : 's'}`, tone: 'favorable' },
+      { label: 'Remaining to deliver', value: `${fmtInt(totals.remaining)} bu`, tone: totals.remaining > 0 ? 'neutral' : 'muted' },
+      { label: 'Delivered but unpaid', value: `${fmtInt(totals.unpaidBu)} bu`, sub: totals.unpaidDollars > 0 ? `about ${fmtUsd(totals.unpaidDollars)} at contract price` : 'nothing waiting on a settlement', tone: totals.unpaidBu > 0 ? 'warning' : 'muted' },
+      { label: 'Fully priced', value: pricedPct != null ? fmtPct(pricedPct) : '—', sub: `${fmtInt(totals.pricedBu)} of ${fmtInt(totals.contracted)} bu`, tone: pricedPct != null && pricedPct >= 100 ? 'favorable' : 'neutral' },
+      ...(position && position.productionBu != null ? [
+        { label: `Expected production, ${cropYear} crop`, value: `${fmtInt(position.productionBu)} bu`, sub: `${fmtPct(position.contractedPct)} under contract` },
+        { label: 'Sold (fully priced or seed)', value: `${fmtInt(position.soldBu)} bu`, tone: 'favorable' as const },
+        { label: 'Contracted, pricing still open', value: `${fmtInt(position.openPricedBu)} bu`, tone: 'warning' as const },
+        { label: 'Unsold', value: `${fmtInt(position.unsoldBu)} bu`, sub: position.overContractedBu > 0 ? `contracted ${fmtInt(position.overContractedBu)} bu more than expected production` : undefined },
+      ] : []),
     ],
     sections: [{
+      title: 'Contracts',
       columns: [
         { label: 'Contract #' }, { label: 'Buyer' }, { label: 'Crop' }, { label: 'Type' }, { label: 'Crop year', format: 'text' },
-        { label: 'Date sold' }, { label: 'Delivery' }, { label: 'Delivery window' },
-        { label: 'Contracted', align: 'right', format: 'bu' }, { label: 'Delivered', align: 'right', format: 'bu' }, { label: 'Remaining', align: 'right', format: 'bu' },
-        { label: 'Progress %', align: 'right', format: 'pct1' }, { label: '$/bu', align: 'right', format: 'price' },
+        { label: 'Date sold', format: 'date' }, { label: 'Delivery' }, { label: 'Delivery window' },
+        { label: 'Contracted (bu)', align: 'right', format: 'bu' }, { label: 'Delivered (bu)', align: 'right', format: 'bu' }, { label: 'Loads', align: 'right', format: 'int' },
+        { label: 'Remaining (bu)', align: 'right', format: 'bu' },
+        { label: 'Progress (%)', align: 'right', format: 'pct0' }, { label: 'Price ($/bu)', align: 'right', format: 'price' }, { label: 'Pricing' },
         { label: 'Contract value', align: 'right', format: 'usd0' }, { label: 'Paid bu', align: 'right', format: 'bu' }, { label: 'Unpaid bu', align: 'right', format: 'bu' },
         { label: 'Unpaid $', align: 'right', format: 'usd0' },
       ],
       rows: [
-        ...rows.map((r) => {
+        ...rows.map((r): ExportCell[] => {
           const c = r.c
-          const location = c.delivery_type === 'delivered' ? `Delivered to ${c.delivery_location?.name ?? '—'}` : 'Pickup'
-          const typeLabel = r.seed ? (r.seed.missingPremiums ? 'Seed (no premiums)' : 'Seed') : CONTRACT_TYPE_LABEL[effectiveContractType(c)]
+          const location = c.delivery_type === 'delivered' ? (c.delivery_location?.name ? `Delivered to ${c.delivery_location.name}` : 'Delivered') : 'Pickup'
+          const typeLabel = r.seed ? (r.seed.missingPremiums ? 'Seed (no premiums yet)' : 'Seed') : CONTRACT_TYPE_LABEL[effectiveContractType(c)]
+          // What the screen's chip beside the price says: is the price final?
+          const priced = r.seed ? r.seed.pricedPct >= 100 : c.pricing_status === 'fully_priced'
+          const pricing = r.seed
+            ? (r.seed.pricedPct >= 100 ? 'Fully priced' : r.seed.pricedPct > 0 ? 'Partly priced' : 'Unpriced')
+            : PRICING_STATUS_LABEL[c.pricing_status]
+          const owed = (v: number | null): ExportCell => (v == null ? '' : r.unpaidBu > 0 ? { v, tone: 'warning' } : v)
           return [
             c.contract_number, c.buyer?.name ?? '', c.crop?.name ?? '', typeLabel, c.crop_year ?? '',
-            c.date_sold ? fmtDate(c.date_sold) : '', location, windowLabel(c.delivery_start_date, c.delivery_end_date),
-            r.contracted, r.delivered, r.remaining, r.pct, r.price ?? '', r.value ?? '', r.paidBu, r.unpaidBu, r.unpaidDollars ?? '',
+            c.date_sold ?? '', location, c.delivery_start_date || c.delivery_end_date ? windowLabel(c.delivery_start_date, c.delivery_end_date) : '',
+            r.contracted, r.delivered, r.agg.loadCount, r.remaining, r.pct, r.price ?? '', priced ? pricing : { v: pricing, tone: 'warning' },
+            r.value ?? '', r.paidBu, owed(r.unpaidBu), owed(r.unpaidDollars),
           ]
         }),
-        ...spotRows.map(({ spot, facts }) => [
+        // The screen names these rows "Spot · Soybean 2026"; the crop, year and
+        // buyer already have their own columns here, so the first stays short.
+        ...spotRows.map(({ spot, facts }): ExportCell[] => [
           'Spot', facts.buyersLabel, cropById.get(spot.crop_id)?.name ?? '', facts.estimated ? 'Spot (est.)' : 'Spot', spot.crop_year,
-          '', 'Delivered', '', '', facts.bushels, '', '', facts.avgPrice ?? '', facts.value, facts.paidBu, facts.unpaidBu, facts.unpaidRevenue,
+          '', 'Delivered', '', '', facts.bushels, facts.loadCount, '', '', facts.avgPrice ?? '', facts.statusText,
+          facts.value, facts.paidBu,
+          facts.unpaidBu > 0 ? { v: facts.unpaidBu, tone: 'warning' } : facts.unpaidBu,
+          facts.unpaidBu > 0 ? { v: facts.unpaidRevenue, tone: 'warning' } : facts.unpaidRevenue,
         ]),
-        ...poolRows.map(({ pool, facts }) => [
+        ...poolRows.map(({ pool, facts }): ExportCell[] => [
           'Price later', buyerName(pool.buyer_id) ?? '', cropById.get(pool.crop_id)?.name ?? '', 'Price later', pool.crop_year,
-          '', 'Delivered', facts.oldestDate ? `oldest ${fmtDate(facts.oldestDate)}` : '', '', facts.bushels, '', '', facts.assumedPrice ?? '', facts.value ?? '', '', '', '',
+          '', 'Delivered', facts.oldestDate ? `oldest ${fmtDate(facts.oldestDate)}` : '', '', facts.bushels, facts.loadCount, '', '',
+          facts.assumedPrice ?? '', { v: facts.assumedPrice != null ? "Unpriced — at today's assumed price" : 'Unpriced', tone: 'warning' },
+          facts.value ?? '', '', '', '',
         ]),
-        ['Totals', '', '', '', '', '', '', '', totals.contracted, totals.delivered, totals.remaining, '', '', totals.value, totals.paidBu, totals.unpaidBu, totals.unpaidDollars],
+        ['Total', '', '', '', '', '', '', '', totals.contracted, totals.delivered, totals.loads, totals.remaining, '', '', '', totals.value, totals.paidBu, totals.unpaidBu, totals.unpaidDollars],
       ],
       rowMeta: [...rows.map(() => 'data' as const), ...spotRows.map(() => 'data' as const), ...poolRows.map(() => 'data' as const), 'total'],
     }],

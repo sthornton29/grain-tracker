@@ -48,7 +48,7 @@ import {
   theadCls, grandTotalRowCls, stickyColCls, stickyColHeadCls, selectCls, filterSummaryOf, cropYearLabel, type SummaryCardData,
 } from '@/components/reports/report-kit'
 import { useReportCropYear } from '@/lib/report-filters'
-import { formatNumber, type ExportPayload } from '@/lib/exports'
+import { formatNumber, type ExportPayload, type ExportCell } from '@/lib/exports'
 import type {
   Crop, Contract, CropAssumption, Entity, FieldPlanting, FuturesPosition, OptionPosition,
   CropInsurancePolicy, CropInsuranceSco, CropInsuranceEco, HarvestPriceEstimate,
@@ -639,28 +639,39 @@ export default function RevenueProjectionsReport({ onPayloadChange, headerAction
   }
 
   function buildExportPayload(): ExportPayload {
-    const filters = `Crop year: ${cropYear || '—'}${entityName ? ` · Entity: ${entityName}` : ''}${insuranceInCostNote ? ` · ${insuranceInCostNote}` : ''}`
+    // One table holds grain rows (bu, $/bu) and a cotton row (lbs of lint,
+    // $/lb): each header names the unit(s) actually in the table, so the crop
+    // column stays the plain crop name it is on screen.
+    const anyCotton = rows.some((r) => r.unit === 'lbs')
+    const anyGrain = rows.some((r) => r.unit !== 'lbs')
+    const unitOf = (grain: string, cotton: string) => (anyCotton && anyGrain ? `${grain}; cotton ${cotton}` : anyCotton ? cotton : grain)
+    // Gain green, loss red — the cells the screen colors.
+    const toned = (v: number | null | undefined): ExportCell => (v == null ? '' : { v, tone: signedTone(v) })
     const revenueSection: ExportPayload['sections'][number] = {
       title: 'Revenue by Crop',
       columns: [
-        { label: 'Crop' }, { label: 'Acres', align: 'right', format: 'acres' }, { label: 'Yield', align: 'right', format: 'yield' },
-        { label: 'Total Production', align: 'right', format: 'bu' }, { label: 'Crop Sales Revenue', align: 'right', format: 'usd0' },
-        { label: 'Insurance Proceeds', align: 'right', format: 'usd0' }, { label: 'Govt Payments', align: 'right', format: 'usd0' },
+        { label: 'Crop' }, { label: 'Acres', align: 'right', format: 'acres' },
+        { label: `Yield (${unitOf('bu/ac', 'lbs/ac')})`, align: 'right', format: 'yield' },
+        { label: `Total Production (${unitOf('bu', 'lbs')})`, align: 'right', format: 'bu' }, { label: 'Crop Sales Revenue', align: 'right', format: 'usd0' },
+        { label: 'Insurance Proceeds', align: 'right', format: 'usd0' }, { label: 'Government Payments', align: 'right', format: 'usd0' },
         { label: 'Total Revenue', align: 'right', format: 'usd0' }, { label: 'Revenue/Acre', align: 'right', format: 'usd0' },
       ],
-      // Cotton rows override the bushel-shaped columns per cell: production in
-      // lbs and the crop name carries the unit so mixed tables stay readable.
-      rows: rows.map((r) => [
-        r.unit === 'lbs' ? `${r.cropName} (lbs lint)` : r.cropName, Math.round(r.acres), r.yield != null ? Number(r.yield.toFixed(1)) : '',
+      // Cotton rows override the bushel-shaped column per cell: production in lbs.
+      rows: rows.map((r): ExportCell[] => [
+        r.cropName, r.acres, r.yield != null ? Number(r.yield.toFixed(1)) : '',
         r.unit === 'lbs' ? { v: Math.round(r.totalProduction), format: 'lbs' as const } : Math.round(r.totalProduction),
-        Math.round(r.cropSalesRevenue), Math.round(r.insuranceProceeds),
+        Math.round(r.cropSalesRevenue), toned(Math.round(r.insuranceProceeds)),
         r.govtPayments, Math.round(r.totalRevenue), r.revenuePerAcre != null ? Math.round(r.revenuePerAcre) : '',
       ]),
       rowMeta: rows.map(() => 'data' as const),
     }
     revenueSection.rows.push([
-      'Total', Math.round(totals.acres), '', Math.round(totals.totalProduction), Math.round(totals.cropSalesRevenue),
-      Math.round(totals.insuranceProceeds), Math.round(totals.govtPayments), Math.round(totals.totalRevenue),
+      'Total', totals.acres, '',
+      // Bushels across the grain rows (cotton lbs never add into bushels); an
+      // all-cotton table totals its lbs.
+      anyGrain ? Math.round(totals.totalProduction) : { v: Math.round(totals.totalProductionLbs), format: 'lbs' as const },
+      Math.round(totals.cropSalesRevenue),
+      toned(Math.round(totals.insuranceProceeds)), Math.round(totals.govtPayments), Math.round(totals.totalRevenue),
       totals.revenuePerAcre != null ? Math.round(totals.revenuePerAcre) : '',
     ])
     revenueSection.rowMeta!.push('total')
@@ -670,27 +681,37 @@ export default function RevenueProjectionsReport({ onPayloadChange, headerAction
       columns: [
         { label: 'Crop' }, { label: 'Cost/Acre', align: 'right', format: 'usd0' }, { label: 'Total Cost', align: 'right', format: 'usd0' },
         { label: 'Total Revenue', align: 'right', format: 'usd0' }, { label: 'Profit', align: 'right', format: 'usd0' }, { label: 'Profit/Acre', align: 'right', format: 'usd0' },
-        { label: 'Total Avg Price', align: 'right', format: 'price' }, { label: 'Breakeven Price', align: 'right', format: 'price' }, { label: 'Breakeven Yield', align: 'right', format: 'yield' },
+        { label: `Total Avg Price (${unitOf('$/bu', '$/lb')})`, align: 'right', format: 'price' },
+        { label: `Breakeven Price (${unitOf('$/bu', '$/lb')})`, align: 'right', format: 'price' },
+        { label: `Breakeven Yield (${unitOf('bu/ac', 'lbs/ac')})`, align: 'right', format: 'yield' },
       ],
       // Cotton prices export as $/lb (per-cell 'cents' format ÷100) — never $/bu.
-      rows: rows.map((r) => [
-        r.unit === 'lbs' ? `${r.cropName} ($/lb · lbs)` : r.cropName, r.costPerAcre != null ? Math.round(r.costPerAcre) : '', Math.round(r.totalCost),
-        Math.round(r.totalRevenue), r.profit != null ? Math.round(r.profit) : '', r.profitPerAcre != null ? Math.round(r.profitPerAcre) : '',
+      // A crop whose cost per acre already carries the premium says so (the
+      // screen's "+ins" mark beside Cost/Acre).
+      rows: rows.map((r): ExportCell[] => [
+        r.insurancePremiumInCost ? `${r.cropName} (cost includes insurance)` : r.cropName,
+        r.costPerAcre != null ? Math.round(r.costPerAcre) : '', Math.round(r.totalCost),
+        Math.round(r.totalRevenue), toned(r.profit != null ? Math.round(r.profit) : null), toned(r.profitPerAcre != null ? Math.round(r.profitPerAcre) : null),
         r.totalAvgPrice != null ? (r.unit === 'lbs' ? { v: Number(r.totalAvgPrice.toFixed(2)), format: 'cents' as const } : Number(r.totalAvgPrice.toFixed(2))) : '',
         r.breakevenPrice != null ? (r.unit === 'lbs' ? { v: Number(r.breakevenPrice.toFixed(2)), format: 'cents' as const } : Number(r.breakevenPrice.toFixed(2))) : '',
         r.breakevenYield != null ? Number(r.breakevenYield.toFixed(1)) : '',
       ]),
       rowMeta: rows.map(() => 'data' as const),
+      // The note the screen prints under this table — one sentence per line.
+      postlude: insuranceInCostNote
+        ? insuranceInCostNote.split('. ').map((s, i, all) => ({ kind: 'text' as const, cells: [i < all.length - 1 ? `${s}.` : s] }))
+        : undefined,
     }
     profitSection.rows.push([
       'Total', totals.costPerAcre != null ? Math.round(totals.costPerAcre) : '', Math.round(totals.totalCost),
-      Math.round(totals.totalRevenue), Math.round(totals.profit), totals.profitPerAcre != null ? Math.round(totals.profitPerAcre) : '', '', '', '',
+      Math.round(totals.totalRevenue), toned(Math.round(totals.profit)), toned(totals.profitPerAcre != null ? Math.round(totals.profitPerAcre) : null), '', '', '',
     ])
     profitSection.rowMeta!.push('total')
 
     return {
       title: 'Revenue Projections',
-      filters,
+      // The same line the report header shows.
+      filters: filterSummaryOf(cropYear === '' ? null : cropYearLabel(cropYear), entityName ?? 'All Entities'),
       summary: [
         { label: 'Total Revenue', value: formatNumber(totals.totalRevenue, 'usd0') },
         { label: 'Total Cost', value: formatNumber(totals.totalCost, 'usd0') },

@@ -1,7 +1,7 @@
 ---
 page_route: /reports/government-payments
 title: Government Payment Tracker
-updated: 2026-10-29
+updated: 2026-11-17
 keywords: government payments, ARC, PLC, payment year, program year, payment limit, MYA, base acres, USDA, seed cotton, FSA payment statement, upload statement, received, projected, variance, implied rate, higher of, 2025, payee, Martin Farm, 1099-G, calendar year, statements, upside down, share rent, producer share, landlord share, statement rate, paid less than projected
 ---
 ## What this page is for
@@ -16,7 +16,7 @@ The Payment Tracker projects your ARC/PLC and other USDA payments, records what 
 - Review the **MYA Prices panel** — every projection rides on these prices, and you control where they come from.
 - Use the **Upload FSA payment statement** tab when a statement arrives from the county office. Drop the PDF (or photos of it); every payment block is read, checked, and shown by farm for you to confirm. Once saved, the statement's ARC/PLC amounts become the **Received** figures everywhere, and a **Statements** tab lists every statement with a link to its own page and the PDF.
 - Switch **Projected | Received | Both** above the tables. The KPI strip shows projected, received, the variance in dollars and percent, the share of the projection received so far, and the date of the last statement.
-- Export to **Excel** or **PDF**; the export mirrors the view you chose (projected, received or both), and once a statement is on file the Excel workbook adds Statements, Lines and Crop Amounts tabs plus a Received vs Projected tab whose Received column is a live SUMIFS over the crop amounts.
+- Export to **Excel** or **PDF**; the export mirrors the view you chose (projected, received or both), and once a statement is on file the Excel workbook adds Statements, Statement Lines and Crop Amounts tabs, a Received by Calendar Year tab (the figure your 1099-G reports), and a Received vs Projected tab whose Received column adds up the crop amounts for you. Dates in the workbook are real dates you can sort and filter.
 
 ## What the controls do
 

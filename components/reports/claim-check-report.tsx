@@ -23,7 +23,7 @@ import {
   buildAgentReply, buildClaimCheck, defaultClaimKeys, practiceWord, WATCH_MARGIN,
   type ClaimCheckUnit, type TriggerYieldRow, type UnitStatus,
 } from '@/lib/trigger-yield-check'
-import type { ExportPayload } from '@/lib/exports'
+import type { ExportCell, ExportPayload, RowKind } from '@/lib/exports'
 import type { CombineEntryLike } from '@/lib/yields'
 import type { County, Crop, CropAssumption, CropInsurancePolicy, Entity, Farm, Field, FieldPlanting, HarvestPriceEstimate, LoadSplit } from '@/lib/types'
 import {
@@ -34,6 +34,7 @@ import ExportBar from '@/components/export-bar'
 import { AppModal } from '@/components/app-dialog'
 import TriggerReportImport from '@/components/crop-insurance/trigger-report-import'
 import type { ProductionLoadRow } from '@/lib/production-report'
+import { fmtDate } from '@/lib/format-date'
 
 const LOAD_SELECT = 'id, date, time, net_weight, moisture, crop_id, dry_bushels_override, crop_year, from_type, from_field_id, practice'
 
@@ -209,29 +210,82 @@ export default function ClaimCheckReport() {
   const entityLabel = entityId ? entities.find((e) => e.id === entityId)?.name ?? '' : allEntitiesLabel
   const filterSummary = filterSummaryOf(cropYearLabel(cropYear), entityLabel)
 
-  const buildPayload = useCallback((): ExportPayload => ({
-    title: 'Claim Check',
-    filters: filterSummary,
-    summary: [
-      { label: 'Units checked', value: String(covered.length) },
-      { label: 'Below trigger', value: String(below.length), tone: below.length ? 'unfavorable' : 'favorable' },
-      { label: 'Close to trigger', value: String(watch.length), tone: watch.length ? 'warning' : 'neutral' },
-      { label: 'Still harvesting', value: String(pending.length) },
-    ],
-    sections: [{
-      columns: [
-        { label: 'Insured' }, { label: 'County' }, { label: 'Crop' }, { label: 'Practice' },
-        { label: 'Planted ac', align: 'right', format: 'acres' }, { label: 'Harvested ac', align: 'right', format: 'acres' },
-        { label: 'Yield so far', align: 'right', format: 'yield' }, { label: 'Trigger', align: 'right', format: 'yield' },
-        { label: 'Margin', align: 'right', format: 'yield' }, { label: 'Status' }, { label: 'Notes' },
+  // The export follows the table on screen: a heading row per insured, a row
+  // per unit, the same colors, and what the small print under a cell says
+  // (bu or lb, where the trigger came from, "not final") in words.
+  const buildPayload = useCallback((): ExportPayload => {
+    const rows: ExportCell[][] = []
+    const rowMeta: RowKind[] = []
+    // The fields behind each unit (what the screen shows when a unit is opened):
+    // an agent asked about a unit wants the farms and fields that make it up.
+    const fieldRows: ExportCell[][] = []
+    const fieldMeta: RowKind[] = []
+    for (const [insured, list] of groupByInsured(units)) {
+      rows.push([list[0].insuredKind === 'landowner' ? `${insured} — landowner, their share of your fields` : insured])
+      rowMeta.push('subhead')
+      for (const u of list) {
+        const practice = practiceWord(u.practice) === 'irrigated' ? 'Irrigated' : 'Dryland'
+        if (u.fields.length > 0) {
+          fieldRows.push([`${u.countyName} · ${u.cropName} · ${practice} — ${insured}`])
+          fieldMeta.push('subhead')
+          for (const f of u.fields) {
+            fieldRows.push([
+              f.farmName, f.fieldName, f.acres,
+              f.status === 'complete' ? f.production : '', u.unit === 'lbs' ? 'lb' : 'bu', f.yieldPerAcre ?? '',
+              { v: f.status === 'complete' ? 'Harvested' : f.status === 'in_progress' ? 'Still harvesting' : 'Not started', tone: f.status === 'complete' ? 'neutral' : 'warning' },
+              [f.splitByAcres ? 'Irrigated and dryland split by acres.' : '', f.lintEstimated ? 'Includes an estimate for cotton not ginned yet.' : ''].filter(Boolean).join(' '),
+            ])
+            fieldMeta.push('data')
+          }
+        }
+        const notFinal = u.status !== 'no_coverage' && u.status !== 'not_started' && !u.final
+        rows.push([
+          u.countyName, u.cropName, practice,
+          u.plantedAcres, u.harvestedAcres, u.yieldToDate ?? '', u.trigger ?? '',
+          u.margin == null ? '' : { v: u.margin, tone: u.margin < 0 ? 'unfavorable' : 'favorable' },
+          u.unit === 'lbs' ? 'lb/ac' : 'bu/ac',
+          { v: `${STATUS_LABEL[u.status]}${notFinal ? ' (not final)' : ''}`, tone: STATUS_TONE[u.status] },
+          u.triggerSource === 'agent' ? 'Agent’s report' : u.triggerSource === 'policy' ? 'Your policy' : '',
+          [u.lintEstimated ? 'Yield includes an estimate for cotton not ginned yet.' : '', ...u.flags.map((f) => f.message)].filter(Boolean).join(' '),
+        ])
+        rowMeta.push('data')
+      }
+    }
+    return {
+      title: 'Claim Check',
+      filters: filterSummary,
+      summary: [
+        { label: 'Units checked', value: String(covered.length), sub: hasAgentRows ? 'using your agent’s trigger yields' : 'triggers figured from your policies' },
+        { label: 'Below trigger', value: String(below.length), tone: below.length ? 'unfavorable' : 'favorable', sub: below.length ? 'talk to your agent about a claim' : 'none' },
+        { label: 'Close to trigger', value: String(watch.length), tone: watch.length ? 'warning' : 'neutral', sub: `within ${Math.round(WATCH_MARGIN * 100)}% above it` },
+        { label: 'Still harvesting', value: String(pending.length), sub: pending.length ? 'not final yet' : 'every unit is in' },
       ],
-      rows: units.map((u) => [
-        u.insuredName, u.countyName, u.cropName, practiceWord(u.practice) === 'irrigated' ? 'Irrigated' : 'Dryland',
-        u.plantedAcres, u.harvestedAcres, u.yieldToDate ?? '', u.trigger ?? '', u.margin ?? '', STATUS_LABEL[u.status],
-        u.flags.map((f) => f.message).join(' '),
-      ]),
-    }],
-  }), [filterSummary, covered.length, below.length, watch.length, pending.length, units])
+      sections: [{
+        title: 'By Unit',
+        // County, crop and practice together name a unit.
+        freezeColumns: 3,
+        columns: [
+          { label: 'County' }, { label: 'Crop' }, { label: 'Practice' },
+          { label: 'Planted ac', align: 'right', format: 'acres' }, { label: 'Harvested ac', align: 'right', format: 'acres' },
+          { label: 'Yield so far', align: 'right', format: 'yield' }, { label: 'Trigger', align: 'right', format: 'yield' },
+          { label: 'Margin', align: 'right', format: 'yield' }, { label: 'Yield unit' }, { label: 'Status' },
+          { label: 'Trigger from' }, { label: 'Notes' },
+        ],
+        rows,
+        rowMeta,
+      }, ...(fieldRows.length > 0 ? [{
+        title: 'By Field',
+        freezeColumns: 2,
+        columns: [
+          { label: 'Farm' }, { label: 'Field' }, { label: 'Acres', align: 'right' as const, format: 'acres' as const },
+          { label: 'Production', align: 'right' as const, format: 'bu' as const }, { label: 'Unit' },
+          { label: 'Yield per acre', align: 'right' as const, format: 'yield' as const }, { label: 'Harvest status' }, { label: 'Notes' },
+        ],
+        rows: fieldRows,
+        rowMeta: fieldMeta,
+      }] : [])],
+    }
+  }, [filterSummary, covered.length, below.length, watch.length, pending.length, units, hasAgentRows])
 
   if (loading) return <div className="text-slate-500">Loading…</div>
   if (loadErr) return <EmptyState message={loadErr} />
@@ -453,7 +507,7 @@ function UnitDetail({ u, canEdit, fixing, onUseApproved }: { u: ClaimCheckUnit; 
       )}
       {t && (
         <div className="text-xs text-slate-600">
-          Agent’s report{t.report_date ? ` (${t.report_date})` : ''}: {fmt1(Number(t.reported_acres))} ac · APH {fmt1(Number(t.aph_yield))} · approved {fmt1(Number(t.approved_yield))} · trigger {fmt1(Number(t.trigger_yield))}
+          Agent’s report{t.report_date ? ` (${fmtDate(t.report_date)})` : ''}: {fmt1(Number(t.reported_acres))} ac · APH {fmt1(Number(t.aph_yield))} · approved {fmt1(Number(t.approved_yield))} · trigger {fmt1(Number(t.trigger_yield))}
           {t.expected_county_yield != null && <> · expected county {fmt1(Number(t.expected_county_yield))}</>}
           {t.eco_trigger_yield != null && <> · ECO {fmt1(Number(t.eco_trigger_yield))}</>}
           {t.sco_trigger_yield != null && <> · SCO {fmt1(Number(t.sco_trigger_yield))}</>}

@@ -627,7 +627,7 @@ export default function MarketingPage() {
         return ref ? `${r.cropName}: ${ref.symbol}${ref.rolled ? ` (rolled from ${prettyMonth(ref.benchmarkMonth)})` : ref.overridden ? ' (pinned)' : ''}` : null
       })
       .filter(Boolean)
-      .join(' · ')
+      .join(', ') // one item of the " · " context line, so never " · " inside it
     return buildMarketingExport({ year, rows, contracts: scopedContracts, cropMeta, segByCrop: resolvedSegByCrop, combined, entityName, referenceNote: referenceNote || null })
   }
 

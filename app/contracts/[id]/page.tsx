@@ -11,7 +11,7 @@ import ContractAttachments from '@/components/contract-attachments'
 import SeedContractDetail from '@/components/seed-contract-detail'
 import type { SeedContractDetails, SeedContractPayment, SeedContractPremium, SeedPricingElection } from '@/lib/seed-contracts'
 import StaticExportBar from '@/components/static-export-bar'
-import { formatNumber, type ExportPayload } from '@/lib/exports'
+import { formatNumber, type ExportCell, type ExportPayload, type NumFmt } from '@/lib/exports'
 import { fmtDate } from '@/lib/format-date'
 import { fmtInt, fmtUsd, fmtNum, theadCls } from '@/components/reports/report-format'
 import {
@@ -291,52 +291,71 @@ export default async function ContractDetailPage({ params }: { params: { id: str
   ]
 
   // Formatted PDF/Excel of the contract document (plain data → StaticExportBar).
+  // A figure is a real number carrying its own format; nothing on file is a
+  // blank cell, never a dash.
+  const fig = (v: number | string | null | undefined, format: NumFmt): ExportCell =>
+    v == null || v === '' || !Number.isFinite(Number(v)) ? null : { v: Number(v), format }
   const contractExportPayload: ExportPayload = {
     title: `Contract #${contract.contract_number}`,
     filters: [contract.buyer?.name, contract.crop?.name, contract.crop_year != null ? `${contract.crop_year} crop` : null].filter(Boolean).join(' · '),
+    // Contracted, then the screen's Progress block, then the value.
     summary: [
       { label: 'Contracted', value: `${formatNumber(Number(contract.contracted_bushels), 'bu')} bu` },
-      { label: 'Delivered', value: `${formatNumber(delivered, 'bu')} bu` },
+      { label: 'Delivered', value: `${formatNumber(delivered, 'bu')} bu`, sub: `${formatNumber(pct, 'pct0')} delivered · ${parts.length} load${parts.length === 1 ? '' : 's'}` },
       { label: 'Remaining', value: `${formatNumber(remaining, 'bu')} bu` },
+      { label: 'Paid bu', value: `${formatNumber(paidBu, 'bu')} bu`, sub: 'buyer’s settled bushels' },
+      { label: 'Paid so far', value: formatNumber(paidRev, 'usd0') },
       { label: 'Contract value', value: contractRevenue != null ? formatNumber(contractRevenue, 'usd0') : '—' },
     ],
     sections: [
       {
         title: 'Contract',
-        columns: [{ label: 'Field' }, { label: 'Value', align: 'right' }],
+        columns: [{ label: 'Item' }, { label: 'Value', align: 'right' }],
         rows: [
           ['Contract #', contract.contract_number ?? ''],
-          ['Buyer', contract.buyer?.name ?? '—'],
-          ['Crop', contract.crop?.name ?? '—'],
-          ['Crop year', contract.crop_year != null ? String(contract.crop_year) : '—'],
-          ['Contract month', contract.contract_month ?? '—'],
-          ['Type', CONTRACT_TYPE_LABEL[effectiveContractType(contract)]],
+          ['Buyer', contract.buyer?.name ?? ''],
+          ['Crop', contract.crop?.name ?? ''],
+          ['Crop year', contract.crop_year != null ? String(contract.crop_year) : ''],
+          ['Contract month', contract.contract_month ?? ''],
+          ['Contract type', CONTRACT_TYPE_LABEL[effectiveContractType(contract)]],
           ['Pricing status', PRICING_STATUS_LABEL[contract.pricing_status]],
-          ['Entity', contract.entity?.name ?? '—'],
-          ['Contracted bushels', formatNumber(Number(contract.contracted_bushels), 'bu')],
-          ['Futures price', contract.futures_price != null ? formatNumber(Number(contract.futures_price), 'price') : '—'],
-          ['Basis', contract.basis != null ? Number(contract.basis).toFixed(4) : '—'],
-          ['Cash price', contract.cash_price != null ? formatNumber(Number(contract.cash_price), 'price') : '—'],
-          ['Contract value', contractRevenue != null ? formatNumber(contractRevenue, 'usd0') : '—'],
-          ['Delivery', contract.delivery_type === 'delivered' ? `Delivered to ${contract.delivery_location?.name ?? '—'}` : 'Pickup'],
+          ['Entity', contract.entity?.name ?? ''],
+          ['Contracted bushels', fig(contract.contracted_bushels, 'bu')],
+          ['Futures price ($/bu)', fig(contract.futures_price, 'price4')],
+          ['Basis ($/bu)', fig(contract.basis, 'price4')],
+          ['Service fee ($/bu)', contract.service_fee ? fig(contract.service_fee, 'price4') : null],
+          ['Cash price ($/bu)', fig(contract.cash_price, 'price4')],
+          ['Contract value (cash price × bushels)', fig(contractRevenue, 'usd0')],
+          ['Delivery', contract.delivery_type === 'delivered' ? (contract.delivery_location?.name ? `Delivered to ${contract.delivery_location.name}` : 'Delivered') : 'Pickup'],
+          [
+            'Delivery window',
+            contract.delivery_start_date || contract.delivery_end_date
+              ? `${contract.delivery_start_date ? fmtDate(contract.delivery_start_date) : 'open'} → ${contract.delivery_end_date ? fmtDate(contract.delivery_end_date) : 'open'}`
+              : '',
+          ],
+          ['Date sold', contract.date_sold ? { v: contract.date_sold, format: 'date' } : null],
+          ['Notes', contract.notes ?? ''],
         ],
       },
       {
         title: 'Loads delivered',
         columns: [
-          { label: 'Date' }, { label: 'Ticket' }, { label: 'Sale' }, { label: 'Truck' }, { label: 'From' },
-          { label: 'Net wt (lb)', align: 'right', format: 'int' }, { label: 'Moisture %', align: 'right', format: 'dec1' },
-          { label: 'Dry bu', align: 'right', format: 'bu' }, { label: 'Paid bu', align: 'right', format: 'bu' }, { label: 'Paid $', align: 'right', format: 'usd0' },
+          { label: 'Date', format: 'date' }, { label: 'Ticket' }, { label: 'Truck' }, { label: 'From' },
+          { label: 'Net weight (lb)', align: 'right', format: 'lbs' }, { label: 'Moisture (%)', align: 'right', format: 'dec1' },
+          { label: 'Dry bu (on this contract)', align: 'right', format: 'bu' }, { label: 'Paid bu', align: 'right', format: 'bu' }, { label: 'Paid $', align: 'right', format: 'usd0' },
+          // The split note the screen prints under the ticket — free text, so last.
+          { label: 'Sale' },
         ],
         rows: [
-          ...parts.map(({ load: l, part, splitNote, paid }) => {
+          ...parts.map(({ load: l, part, splitNote, paid }): ExportCell[] => {
             const fromName = l.from_type === 'bin' ? l.from_bin?.name_or_number : l.from_field?.name_or_number
             return [
-              fmtDate(l.date), l.ticket_number ?? '', splitNote ?? `Contract ${contract.contract_number}`, truckExportLabel(l), fromName ?? '',
-              l.net_weight ?? '', l.moisture ?? '', part.bushels, paid ? paid.bushels : '', paid ? paid.revenue : '',
+              l.date, l.ticket_number ?? '', truckExportLabel(l), fromName ?? '',
+              l.net_weight != null ? Number(l.net_weight) : '', l.moisture != null ? Number(l.moisture) : '', part.bushels, paid ? paid.bushels : '', paid ? paid.revenue : '',
+              splitNote ?? `Contract ${contract.contract_number}`,
             ]
           }),
-          ['Totals', '', '', '', '', '', '', delivered, paidBu, paidRev],
+          ['Total', '', '', '', '', '', delivered, paidBu, paidRev, ''],
         ],
         rowMeta: [...parts.map(() => 'data' as const), 'total'],
       },

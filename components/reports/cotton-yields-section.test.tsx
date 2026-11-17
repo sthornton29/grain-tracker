@@ -87,5 +87,12 @@ describe('CottonYieldsSection', () => {
     expect(section.rows[0][6]).toBe(120_000) // 300,000 × 40%
     expect(section.rows[0][7]).toBe('est. (40% assumed)')
     expect(section.rowMeta?.at(-1)).toBe('total')
+    // Statuses carry the screen's colors; nothing ginned / no bales is a blank, not a dash or a 0.
+    expect(section.rows[1][12]).toEqual({ v: 'in progress', tone: 'warning' })
+    expect(section.rows[0][13]).toEqual({ v: 'on yard', tone: 'warning' })
+    expect(section.rows[2][13]).toBe('')
+    expect(section.rows[0][11]).toBe('')
+    // Farm + Field are the frozen identifying columns of the 14.
+    expect(section.freezeColumns).toBe(2)
   })
 })

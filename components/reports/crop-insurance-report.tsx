@@ -18,9 +18,12 @@
 // Fields still being harvested are left out of the report (acres and
 // production), listed below the filters with a Count anyway button.
 //
-// Exports: PDF / Print mirror the screen through the shared ExportPayload.
-// Excel is the AUDIT WORKBOOK (lib/production-audit-workbook.ts): every
-// summary number a live formula tracing back to the loads.
+// Exports: every format opens on what the screen shows — the Summary, then
+// one page per county × practice listing each farm with its FSA number.
+// PDF / Print come from the shared ExportPayload built here. Excel is the
+// workbook in lib/production-audit-workbook.ts: the same pages first, each
+// number a live formula, with the fields and scale tickets behind them on
+// the tabs that follow.
 
 import Link from 'next/link'
 import { useEffect, useMemo, useState } from 'react'
@@ -235,48 +238,48 @@ export default function CropInsuranceReport() {
   const reportTitle = `${entityName ? entityName + ' ' : ''}${cropYear === '' ? '' : cropYear + ' '}Production Report${balance ? ' — balanced to settlements' : ''}`
   const cropFilterLabel = cropIds.length === 0 ? 'All crops' : cropIds.map((id) => cropById.get(id)?.name ?? '').filter(Boolean).join(', ')
 
-  // Build the shared ExportPayload (PDF / Print): a Summary section (one sheet)
-  // listing each county × practice with per-crop acres/bu, then one section
-  // (sheet) per county × practice detailing farms. Dynamic crop columns come
-  // from reportCrops.
+  // Build the shared ExportPayload (PDF / Print) exactly as the screen reads:
+  // a Summary (one line per county × practice), then one section per county ×
+  // practice listing its farms. Three metric groups — Certified Acres,
+  // Production, Yield per Acre — each spanning the crops, the crop (and its
+  // unit) as the column header. A county page lists only the crops grown
+  // there and its farms in name order, as the on-screen tab does.
   function buildPayload(): ExportPayload {
-    // Mirror the on-screen grouped layout: three per-crop metric groups —
-    // Certified Acres, Production, Yield/Acre — each spanning every crop, with
-    // the crop name as the column header. (The screen shows all three; earlier
-    // exports dropped Yield/Acre entirely.)
-    const metricCols = (fmt: 'acres' | 'bu' | 'yield') =>
-      reportCrops.map((c) => ({ label: c.name, align: 'right' as const, format: fmt }))
-    const cropCols = (): ExportPayload['sections'][number]['columns'] =>
-      [...metricCols('acres'), ...metricCols('bu'), ...metricCols('yield')]
-    // Values for all three metrics across every crop. Blank where the screen is
+    type Section = ExportPayload['sections'][number]
+    const cropCols = (list: Crop[]): Section['columns'] => [
+      ...list.map((c) => ({ label: c.name, align: 'right' as const, format: 'acres' as const })),
+      ...list.map((c) => ({ label: `${c.name} (${unitOf(c)})`, align: 'right' as const, format: unitOf(c) === 'lbs' ? 'lbs' as const : 'bu' as const })),
+      ...list.map((c) => ({ label: `${c.name} (${unitOf(c)}/ac)`, align: 'right' as const, format: 'yield' as const })),
+    ]
+    // Values for all three metrics across the crops. Blank where the screen is
     // blank — 0 acres / 0 bu render empty, and yield needs both to be positive.
-    const metricCells = (byCrop: Map<string, FarmCropCell>): Array<string | number> => {
-      const acres = reportCrops.map((c) => { const v = byCrop.get(c.id); return v && v.acres > 0 ? v.acres : '' })
-      const bu = reportCrops.map((c) => { const v = byCrop.get(c.id); return v && v.bu > 0 ? v.bu : '' })
-      const yld = reportCrops.map((c) => { const v = byCrop.get(c.id); return v && v.acres > 0 && v.bu > 0 ? v.bu / v.acres : '' })
+    const metricCells = (list: Crop[], byCrop: Map<string, FarmCropCell>): Array<string | number> => {
+      const acres = list.map((c) => { const v = byCrop.get(c.id); return v && v.acres > 0 ? v.acres : '' })
+      const bu = list.map((c) => { const v = byCrop.get(c.id); return v && v.bu > 0 ? v.bu : '' })
+      const yld = list.map((c) => { const v = byCrop.get(c.id); return v && v.acres > 0 && v.bu > 0 ? v.bu / v.acres : '' })
       return [...acres, ...bu, ...yld]
     }
-    const metricGroups = (acresLabel: string, prodLabel: string): ExportPayload['sections'][number]['groups'] =>
-      reportCrops.length > 0
+    const metricGroups = (list: Crop[], acresLabel: string, prodLabel: string): Section['groups'] =>
+      list.length > 0
         ? [
             { label: '', span: 2 },
-            { label: acresLabel, span: reportCrops.length },
-            { label: prodLabel, span: reportCrops.length },
-            { label: 'Yield/Acre (Bu. Or Lbs.)', span: reportCrops.length },
+            { label: acresLabel, span: list.length },
+            { label: prodLabel, span: list.length },
+            { label: 'Yield per Acre', span: list.length },
           ]
         : undefined
 
     const sections: ExportPayload['sections'] = []
 
     // Summary section.
-    const summarySection: ExportPayload['sections'][number] = {
+    const summarySection: Section = {
       title: 'Summary',
-      columns: [{ label: 'County' }, { label: 'Practice' }, ...cropCols()],
-      groups: metricGroups('Certified Acres', 'Production (Bu. Or Lbs.)'),
-      rows: summaryRows.map((r) => [r.countyLabel, practiceLabel(r.practice), ...metricCells(r.byCrop)]),
+      columns: [{ label: 'County' }, { label: 'Practice' }, ...cropCols(reportCrops)],
+      groups: metricGroups(reportCrops, 'Certified Acres', 'Production'),
+      rows: summaryRows.map((r) => [r.countyLabel, practiceLabel(r.practice), ...metricCells(reportCrops, r.byCrop)]),
       rowMeta: summaryRows.map(() => 'data' as const),
     }
-    summarySection.rows.push(['Total', '', ...metricCells(summaryTotals)])
+    summarySection.rows.push(['Total', '', ...metricCells(reportCrops, summaryTotals)])
     summarySection.rowMeta!.push('total')
     sections.push(summarySection)
 
@@ -296,17 +299,19 @@ export default function CropInsuranceReport() {
       })
     }
 
-    // One detail section (sheet) per county × practice.
+    // One detail section per county × practice: its farms in name order, and
+    // only the crops with acres there (the on-screen tab's own rule).
     for (const s of detailSheets) {
       const practice = practiceLabel(s.practice)
-      const farms = [...s.farms.values()]
-      const rows: Array<Array<string | number>> = farms.map((f) => [f.farmName, f.fsaNumber ?? '', ...metricCells(f.byCrop)])
+      const farms = [...s.farms.values()].sort((a, b) => a.farmName.localeCompare(b.farmName))
+      const sheetCrops = reportCrops.filter((c) => farms.some((f) => (f.byCrop.get(c.id)?.acres ?? 0) > 0))
+      const rows: Array<Array<string | number>> = farms.map((f) => [f.farmName, f.fsaNumber ?? '', ...metricCells(sheetCrops, f.byCrop)])
       const totalByCrop = summaryRows.find((r) => r.sheetName === s.sheetName)?.byCrop ?? new Map()
-      rows.push(['Total', '', ...metricCells(totalByCrop)])
+      rows.push(['Total', '', ...metricCells(sheetCrops, totalByCrop)])
       sections.push({
         title: s.sheetName,
-        columns: [{ label: 'Farm' }, { label: 'FSA #' }, ...cropCols()],
-        groups: metricGroups(`Certified ${practice} Acres`, `${practice} Production (Bu. Or Lbs.)`),
+        columns: [{ label: 'Farm' }, { label: 'FSA farm #' }, ...cropCols(sheetCrops)],
+        groups: metricGroups(sheetCrops, `Certified ${practice} Acres`, `${practice} Production`),
         rows,
         rowMeta: [...farms.map(() => 'data' as const), 'total'],
       })
@@ -848,8 +853,8 @@ function DetailTable({ sheet, reportCrops }: { sheet: DetailSheet; reportCrops: 
     <table className="min-w-full text-sm border-collapse">
       <thead className={theadCls}>
         <tr>
-          <th rowSpan={2} className="border border-slate-300 bg-slate-100 px-2 py-1 text-left align-bottom">Farm Name</th>
-          <th rowSpan={2} className="border border-slate-300 bg-slate-100 px-2 py-1 text-left align-bottom">Farm #</th>
+          <th rowSpan={2} className="border border-slate-300 bg-slate-100 px-2 py-1 text-left align-bottom">Farm</th>
+          <th rowSpan={2} className="border border-slate-300 bg-slate-100 px-2 py-1 text-left align-bottom">FSA farm #</th>
           <th colSpan={sheetCrops.length} className="border border-slate-300 bg-slate-100 px-2 py-1 text-center">
             Certified {practice} Acres
           </th>

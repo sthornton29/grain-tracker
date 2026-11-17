@@ -8,6 +8,8 @@
 // position change — supabase/083), so nothing here appends; this only reads.
 
 import { fmtCommodityPrice, fmtPnl, roundPrice } from '@/lib/hedging'
+import type { ExportCell } from '@/lib/exports'
+import { fmtDate } from '@/lib/format-date'
 import type { HedgePositionEvent, HedgeEventType } from '@/lib/types'
 
 export type TimelineLine = {
@@ -351,42 +353,60 @@ export function eventsForPosition(events: readonly HedgePositionEvent[], positio
 // ---------- export (one row per event, chronological) ----------
 
 export const HEDGE_EVENT_EXPORT_COLUMNS = [
-  { label: 'Date' }, { label: 'Event' }, { label: 'Commodity' }, { label: 'Month' }, { label: 'Symbol' }, { label: 'Side' },
+  { label: 'Date', format: 'date' as const }, { label: 'Event' }, { label: 'Commodity' }, { label: 'Month' }, { label: 'Symbol' }, { label: 'Side' },
   { label: 'Contracts', align: 'right' as const, format: 'int' as const },
-  { label: 'Entry Price', align: 'right' as const, format: 'price' as const },
-  { label: 'Close Price', align: 'right' as const, format: 'price' as const },
-  { label: 'Realized P&L', align: 'right' as const, format: 'usd2' as const },
+  // Grain to the quarter cent ($4.5325/bu); a cotton cell carries its own
+  // cents-stored, dollars-per-pound format.
+  { label: 'Entry Price', align: 'right' as const, format: 'price4' as const },
+  { label: 'Close Price', align: 'right' as const, format: 'price4' as const },
+  { label: 'Realized Gain/Loss', align: 'right' as const, format: 'usd2' as const },
   { label: 'Fees', align: 'right' as const, format: 'usd2' as const },
   { label: 'Crop Year', format: 'text' as const }, { label: 'Entity' },
-  { label: 'Source' }, { label: 'Statement' }, { label: 'Recorded' }, { label: 'By' }, { label: 'Linked To' }, { label: 'Changes / Note' },
+  { label: 'Source' }, { label: 'Statement' }, { label: 'Recorded', format: 'date' as const }, { label: 'By' }, { label: 'Linked To' }, { label: 'Changes / Note' },
 ]
 
-export type HedgeEventExportRow = Array<string | number>
+export type HedgeEventExportRow = ExportCell[]
+
+/** An ISO timestamp as its local calendar day ('YYYY-MM-DD'), the shape an
+ *  export date cell takes. A plain date passes through untouched. */
+function localDay(iso: string): string {
+  if (!iso.includes('T')) return iso
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return iso
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
 
 export function hedgeEventExportRows(
   events: readonly HedgePositionEvent[],
   opts?: { entityName?: (id: string | null) => string; positionLabel?: (id: string | null) => string },
 ): HedgeEventExportRow[] {
   const sorted = [...events].sort((a, b) => a.occurred_at.localeCompare(b.occurred_at) || a.recorded_at.localeCompare(b.recorded_at))
-  return sorted.map((ev) => [
+  // Cotton trades in cents per pound and reads as dollars per pound; grain is
+  // dollars per bushel to the quarter cent.
+  const price = (ev: HedgePositionEvent, n: number | string | null | undefined): ExportCell =>
+    n == null ? '' : ev.commodity === 'Cotton' ? { v: Number(n), format: 'cents' } : Number(n)
+  const cap = (s: string | null | undefined) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : '')
+  return sorted.map((ev): ExportCell[] => [
     ev.occurred_at,
     eventLabel(ev.event_type),
     ev.commodity ?? '',
     ev.contract_month ?? '',
     ev.contract_symbol ?? '',
-    ev.side ?? '',
+    cap(ev.side),
     ev.quantity ?? '',
-    ev.price != null ? Number(ev.price) : '',
-    ev.close_price != null ? Number(ev.close_price) : '',
+    price(ev, ev.price),
+    price(ev, ev.close_price),
     ev.realized_pnl != null ? Number(ev.realized_pnl) : '',
     ev.fees != null ? Number(ev.fees) : '',
     ev.crop_year ?? '',
     opts?.entityName?.(ev.entity_id) ?? '',
     sourceLabel(ev),
-    ev.statement_date ? `${ev.statement_ref ? `${ev.statement_ref} ` : ''}${ev.statement_date}` : '',
-    ev.recorded_at,
+    ev.statement_date ? `${ev.statement_ref ? `${ev.statement_ref} ` : ''}${fmtDate(ev.statement_date)}` : '',
+    // When it was recorded, as its local calendar day (a real date in the file).
+    localDay(ev.recorded_at),
     ev.actor_email ?? '',
-    ev.related_position_id ? (opts?.positionLabel?.(ev.related_position_id) ?? ev.related_position_id) : '',
+    // The position this event came from or rolled into, in words: never a record id.
+    ev.related_position_id ? (opts?.positionLabel?.(ev.related_position_id) ?? '') : '',
     [ev.event_type === 'edited' || ev.event_type === 'crop_year_changed' ? diffSummary(ev) : '', ev.note ?? ''].filter(Boolean).join(' · '),
   ])
 }

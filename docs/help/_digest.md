@@ -1,6 +1,6 @@
 # Turnrow capabilities digest
 
-Generated 2026-11-14 · version 0.1.0 · build 4495605. Compiled from docs/help — regenerate with `npm run help:build`.
+Generated 2026-11-17 · version 0.1.0 · build 56eab24. Compiled from docs/help — regenerate with `npm run help:build`.
 
 # What Turnrow does NOT do
 
@@ -96,7 +96,7 @@ Bin Inventory shows the dry bushels sitting in each bin right now, grouped by bi
 - **Transfer grain** records grain moved from one bin to another — for example, out of a wet bin into a dry bin after drying. Pick the from bin, to bin, crop, and date, then either type the bushels or estimate them from run time.
 - When you first start with Turnrow and a bin already has grain in it from before your load records begin, tap **Beginning inventory** on that bin and enter the dry bushels (with an as-of date and a note). That grain then counts until the bin is next emptied.
 - When a bin is cleaned out, tap **Empty bin**. Turnrow shows you what it thinks is in the bin — the bushels of each crop — and asks you to confirm before it records a cleanout that zeroes the bin. That keeps small leftovers from shrink and scale drift from accumulating year over year.
-- **Export** — Excel, PDF, CSV, or Print — downloads the current view, including each bin's capacity and percent full.
+- **Export** — Excel, PDF, CSV, or Print — downloads the current view: each bin under its bin site (with a subtotal per site when you have more than one), its capacity and percent full, the bushels on hand per crop, and the filters you had set.
 
 ## Transferring grain between bins
 
@@ -706,7 +706,7 @@ For the bales you choose it shows how many are classed, the lint pounds, the ave
 - Every grade factor gets a slim **tile** — color, leaf, staple, micronaire, strength, uniformity, extraneous matter, remarks, Rd, +b, color quadrant, trash, length and loan value: its average (or its most common code), a thin premium / base / discount strip, and — with a contract — how many bales fail that factor. A factor your classing data doesn't carry says "no readings". **Tap a tile** to open the factor's detail underneath; tap it again, or the ✕, to close it.
 - **Group by** and **Columns** live on the comparison table. Group by: Overall, Entity, Farm, Field, Variety, Gin, Receipt, Harvest date, or Class week. Columns picks which factors the table, the bale list and the exports carry: **Loan factors** (color, leaf, staple, mic, strength, uniformity, loan value — the default), **Mill specs**, or **Everything**. The Excel By Group tab follows both.
 - Tap any histogram column, code row, color-grid cell, Pareto row, fail line or KPI card to filter the bale list to those bales. The blue "Showing" chip above the list clears it.
-- **Export**: Excel builds a workbook with a Bales tab (every classed bale in the filter), a Summary tab and a By Group tab whose figures are live formulas over the Bales tab, and — with a contract selected — a Contract Spec tab. PDF and Print mirror the screen.
+- **Export**: Excel builds a workbook with a Bales tab (every classed bale in the filter), a Summary tab and a By Group tab whose figures are live formulas over the Bales tab, and — with a contract selected — a Contract Spec tab. Each tab opens on its table, with the headline counts under the Summary table. PDF and Print mirror the screen, the contract section first.
 
 ## What the controls do
 
@@ -807,6 +807,7 @@ After harvest your crop insurance agent may send a **trigger yield report** and 
 - Tap **Read your agent's trigger yield report** and upload the PDF your agent sent. Turnrow reads each unit's trigger yield, acres, APH, and approved yield. Check that each insured is matched to the right entity — or to a landowner, when a landlord insures their own share — then save. When your agent sends an updated or later report (soybeans in December, for example), read it the same way; it replaces only the crops it covers.
 - Each row is one unit. **Below trigger** means the yield so far is under the trigger — talk to your agent about opening a claim. **Close to trigger** means within 10% above it. Units still being harvested say **not final**.
 - Tap a unit to see the fields behind it and anything that needs checking.
+- **Export Excel / PDF / Print** gives you the same table to send along: one sheet of units grouped by insured, and a **By Field** sheet listing the farms and fields behind each unit with their acres, production, yield and harvest status.
 - Tap **Write reply to your agent**. Units below their trigger are already marked "ask to open"; change any box in the table. Add your agent's first name and how you sign, edit the text if you like, then **Copy reply** and paste it into your email.
 
 ## What the numbers mean
@@ -887,7 +888,7 @@ This report lays out your production the way your crop insurance agent needs it:
 - Narrow by **entity** if different entities carry different policies.
 - Choose the **production basis**: **Measured (scale tickets)**, the default, or **Balanced to settlements** (see below). The choice is remembered like the other filters.
 - Use the **crop chips** to include only certain crops. Leaving them all off means every crop shows. The chips only offer crops you actually planted in the selected year and entity.
-- Export with the **Excel**, **PDF**, or **Print** buttons at the top right. They appear once the report can be generated — a year picked, no fields waiting on a breakout, and at least one sheet. PDF and Print mirror what's on screen in the three metric groups — Certified Acres, Production, and Yield/Acre — using the wording your agent's form expects ("Bu. Or Lbs."), and name the production basis in the filters line; when balanced, the PDF also prints the reconciliation. **Excel is the audit workbook** (see below): the same Summary, with every number a live formula that traces back to the loads.
+- Export with the **Excel**, **PDF**, or **Print** buttons at the top right. They appear once the report can be generated — a year picked, no fields waiting on a breakout, and at least one sheet. Every format opens on what you see on screen: the **Summary**, then one page per county and practice listing each farm with its FSA farm number, in the same three groups — Certified Acres, Production, and Yield per Acre — with the unit beside each crop (bu, lbs). The production basis is named at the top; when balanced, the PDF also prints the reconciliation. **The Excel file adds the records behind the report** on the tabs that follow (see below), with every number a live formula that traces back to the loads.
 
 ## What the controls do
 
@@ -922,22 +923,30 @@ When nothing is unsettled and the bins are empty, the balanced total is exactly 
 
 Balancing is a report option only. Yields, Marketing, the Claims Monitor and the partner API keep measured production. Cotton is never balanced — it already reports the gin's lint.
 
-## Audit workbook (Excel export)
+## The Excel workbook
 
-The Excel export is built for an auditor. Every number on the Summary tab is a live formula, so anyone can click a cell and follow it back to the loads behind it. The workbook opens on Summary with a title block (organization, report, crop year, crops, entity, production basis, generated time), a KPI strip, a Contents line linking every tab, and the county × practice table.
+The Excel file is laid out for the person you send it to. It opens on the same report you see on screen, and the records behind it sit on the tabs that follow.
 
-- **Summary** — the county × practice layout per crop. Acres and production are `SUMIFS` over the Field Production tab; yield is production ÷ acres; the Total row sums the rows above. When balanced, the Production and Yield groups read the balanced figures and the measured figures stay visible as their own group.
-- **Settlement Balance** (balanced only) — the reconciliation as live formulas: settled sums the Settlements tab, delivered-not-settled sums the Unsettled Deliveries tab, still-in-bins is a blue input with its source, then the balanced total, the factor and a check. When nothing is unsettled and the bins are empty, a second check reads "Production equals bushels paid".
-- **Field Production** — one row per planting and practice: farm, field, FSA farm number, county, state, crop, crop year, practice, harvest status, acres, scale-ticket bushels (a `SUMIFS` over Load Data matching the row's own Farm, Field, Crop and Crop Year), combine-entry bushels, the entered irrigated/dryland breakout for mixed fields, the field total, the practice share, measured production and yield, balanced production and yield when balanced, a check cell, and the rule in plain words. The field name links to its first load.
-- **Load Data** — one row per load that counts (a split load gets one row per field share), sorted so each field's loads sit together: date, ticket numbers, truck, farm, field, county, crop, practice tag, destination, gross/tare/net pounds, split %, net pounds applied, moisture, base moisture, pounds per bushel, wet bushels, dry bushels (the app's shrink math as an Excel formula), override flag, test weight, and the matched settlement number and buyer net bushels as cross-checks.
-- **Combine Entries** (when any) — bushels from the yield monitor, the calibration adjustment, the harvest-complete flag, and how many scale-ticket bushels are netted inside the entry.
-- **Gin Receipts** and **Bales** (cotton) — receipts with modules, seed cotton, bales, lint pounds and turnout; picked-but-unginned cotton is its own row marked "estimated, not ginned", never mixed silently with ginned lint.
-- **Settlements** and **Unsettled Deliveries** (balanced only) — every counted settlement line (settlement, date, buyer, ticket, load, source field or bin, net bushels in blue) and every delivered load with no settlement yet.
-- **Notes** — how the workbook is built, the shrink formula in words and as Excel, the balance rule when balanced, the filters, the organization and the generated time, and a reconciliation block comparing Turnrow's on-screen total to the workbook's formula total per crop (OK or CHECK).
+**The report (green tabs):**
 
-**To trace a number:** click a Summary cell and read its `SUMIFS`; the criteria name the county, state, crop and practice. Find those rows on Field Production, then click the field name to jump to its loads on Load Data (or match Farm + Field + Crop + Crop Year). Change a load's net pounds or moisture and every total above it recalculates. Two plantings that would read alike (same farm, field, crop and year) get the field name disambiguated — "North 40 (2)" — on every tab, and Notes says so.
+- **Summary** — one line per county and practice, with certified acres, production and yield per acre for each crop, and a Total row. When balanced, the Production and Yield groups show the balanced figures and the measured figures stay beside them. Under the table is a list of every other tab, each a link.
+- **One tab per county and practice** (for example, "Lawrence County Irrigated") — each farm with its FSA farm number, and its certified acres, production and yield for the crops grown there, with a Total row that matches the Summary line. Two farms that share a name in the same county appear as one row with both FSA numbers.
 
-**Blue and black:** blue cells are values straight from your Turnrow records — weights, moisture, acres, overrides, entered breakouts, combine entries, gin receipts, settlement lines. Black cells are formulas. Check cells show green for OK and red for CHECK. The Notes tab ends with a column guide explaining every column on every tab.
+**The records behind it:**
+
+- **Settlement Balance** (balanced only) — settled, delivered-not-settled and still-in-bins, the balanced total, the factor, and a check.
+- **Field Production** — one row per field and practice: farm, field, FSA farm number, county, crop, acres, where the production came from (scale tickets, the combine monitor, or gin receipts), how it was split between practices, production and yield, and the rule in plain words. A field name is a link to its loads.
+- **Load Data** — one row per load that counts (a split load gets one row per field share): date, ticket numbers, truck, farm, field, destination, gross / tare / net pounds, moisture, and the shrink to dry bushels. Each row has an **Open** link to the load in Turnrow.
+- **Combine Entries** (when any) — bushels from the yield monitor and the calibration adjustment.
+- **Gin Receipts** and **Bales** (cotton) — receipts with modules, seed cotton, bales, lint pounds and turnout; cotton picked but not yet ginned is its own row marked "estimated, not ginned".
+- **Settlements** and **Unsettled Deliveries** (balanced only) — every settlement line counted, and every delivered load with no settlement yet.
+- **Notes** — how the numbers are worked out, a guide to every column, and a check that the workbook's totals equal the totals on your screen (OK or CHECK).
+
+**Finding your way around:** on every tab the column headings stay in place as you scroll down, and the columns that name the row (county and practice, farm and field, date and ticket) stay in place as you scroll right. Every tab has a **← Summary** link at the top left. The detail tabs have filter buttons on their headings so you can narrow to one farm or one field.
+
+**To trace a number:** click a cell on the Summary or a county tab and read its formula; it names the farm, county, crop and practice it adds up. Find those rows on Field Production, then click the field name to jump to its loads on Load Data. Change a load's net pounds or moisture and every total above it recalculates.
+
+**Blue and black:** blue numbers are values straight from your Turnrow records — weights, moisture, acres, entered breakouts, combine entries, gin receipts, settlement lines. Black numbers are formulas. Check cells show green for OK and red for CHECK.
 
 **Why bin loads aren't listed:** production is counted when grain leaves the field. A load hauled out of a bin is the same grain a second time, so listing it would double count. (Bin-out loads do appear on the Settlements tab when balanced, because the buyer paid for them.)
 
@@ -946,7 +955,8 @@ The Excel export is built for an auditor. Every number on the Summary tab is a l
 - **Why is a field missing?** Its harvest probably isn't complete yet — it is listed under the filters as still harvesting. If it is truly done, tap Count anyway there or on the Yields page.
 - **Why is the report blocked?** One or more mixed-practice fields finished harvest without a production breakout. Enter the irrigated/dryland split on the Yields page, or accept the option to roll it into dryland.
 - **Can I report one crop at a time?** Yes — use the crop chips. Only the selected crops (and their fields) count.
-- **Does the export match the screen?** Yes. Every column and metric group on screen appears in the PDF, and the Excel workbook's Notes tab reconciles its formula totals to the screen per crop.
+- **Does the export match the screen?** Yes. The PDF and the first tabs of the Excel file show the same Summary and the same county-by-practice farm pages as the screen, and the Excel file's Notes tab checks its totals against the screen for each crop.
+- **Which tabs does my agent need?** The green ones: Summary and the county tabs. The rest are there if an adjuster asks to see the fields and scale tickets behind a number.
 - **The balanced factor looks wrong.** Check the panel: an unmatched settlement line can't count until it is matched to its load, and a delivery with no settlement yet counts at your own dry bushels until the settlement arrives. A factor more than 5% from 1 usually means a settlement or a load is missing.
 - **The Notes tab says CHECK.** The workbook's formulas and the screen disagree for that crop. The usual cause is a mixed field whose entered breakout no longer adds up to its loads (its Field Production check cell will also say CHECK) — re-enter the breakout on the Yields page.
 
@@ -1081,7 +1091,7 @@ The Payment Tracker projects your ARC/PLC and other USDA payments, records what 
 - Review the **MYA Prices panel** — every projection rides on these prices, and you control where they come from.
 - Use the **Upload FSA payment statement** tab when a statement arrives from the county office. Drop the PDF (or photos of it); every payment block is read, checked, and shown by farm for you to confirm. Once saved, the statement's ARC/PLC amounts become the **Received** figures everywhere, and a **Statements** tab lists every statement with a link to its own page and the PDF.
 - Switch **Projected | Received | Both** above the tables. The KPI strip shows projected, received, the variance in dollars and percent, the share of the projection received so far, and the date of the last statement.
-- Export to **Excel** or **PDF**; the export mirrors the view you chose (projected, received or both), and once a statement is on file the Excel workbook adds Statements, Lines and Crop Amounts tabs plus a Received vs Projected tab whose Received column is a live SUMIFS over the crop amounts.
+- Export to **Excel** or **PDF**; the export mirrors the view you chose (projected, received or both), and once a statement is on file the Excel workbook adds Statements, Statement Lines and Crop Amounts tabs, a Received by Calendar Year tab (the figure your 1099-G reports), and a Received vs Projected tab whose Received column adds up the crop amounts for you. Dates in the workbook are real dates you can sort and filter.
 
 ## What the controls do
 
@@ -1141,7 +1151,7 @@ The report opens on the current crop year (or the year you last picked); narrow 
 - **Commodity** — narrow to corn, soybeans, wheat, cotton, and so on.
 - **Entity** — positions in an entity's own name count wholly toward it; positions held by your marketing agent or entered without an entity are hedging for the whole operation.
 - **From date / To date** — filter positions by trade date, or close date for closed positions. The activity section uses each event's trade date.
-- **Export Excel / PDF / Print** — the summary and full position detail with your filters named, plus the activity sheet.
+- **Export Excel / PDF / Print** — the summary and full position detail with your filters named, plus the activity sheet. Grain prices show to the quarter cent ($4.5325) and cotton prices in dollars per pound ($0.7265), dates are real dates, and gains and losses are colored as on screen.
 
 ## Hedging activity
 
@@ -1423,7 +1433,7 @@ When your crop insurance production is audited, the adjuster wants the buyer's s
 - **Crop** — which crop's settlements to gather.
 - **Crop year** — which year's settlements to gather.
 - **Download ZIP** — builds the bundle. The button shows progress while it works and tells you how many PDFs it will include.
-- **Export buttons** — export the list itself (dates, settlement numbers, buyers, matched line counts, PDF status) as a checklist to go with the bundle.
+- **Export buttons** — export the list itself (dates, settlement numbers, buyers, the number of matching loads, PDF status) as a checklist to go with the bundle.
 - **Open →** — jumps to a settlement's review page, where you can attach a missing PDF.
 
 ## Common questions
@@ -1492,7 +1502,7 @@ This report shows production and yields organized by landowner. If you farm grou
 
 - The report opens on the current crop year (or the year you last picked). It groups everything by landowner, then by farm, then by field.
 - Narrow with the **crop**, **entity**, or **landowner** filters — picking one landowner gives you a clean page for that owner alone.
-- Use the **Excel**, **PDF**, or **Print** buttons to produce a copy to hand or email to the landowner. The export mirrors the screen. The "Owned / No Landowner" group is left off the printed handout, and off the page entirely for a landowner signed in with read-only access.
+- Use the **Excel**, **PDF**, or **Print** buttons to produce a copy to hand or email to the landowner. The export mirrors the screen, with a sheet for each landowner in Excel. The "Owned / No Landowner" group is left off the printed handout, and off the page entirely for a landowner signed in with read-only access.
 - With Cotton turned on and a crop year picked, the **turnout for estimates** sits under the filters — the lint percentage Turnrow uses for seed cotton that is picked but not ginned yet. It is the same figure the Yields page and Marketing use: change it here and it changes there too.
 - With Cotton turned on and a crop year picked, the **turnout for estimates** sits under the filters — the lint percentage Turnrow uses for seed cotton that is picked but not ginned yet. It is the same figure the Yields page and Marketing use: change it here and it changes there too.
 - Your filter choices are remembered, so the report opens the same way next time. The same view lives on the Yields page under the **By landowner** tab, where it follows that page's filter row.
@@ -1560,6 +1570,17 @@ Every report has the same layout: the title with a plain line underneath naming 
 The landing page itself does no math — each report computes its own numbers and explains them on its own page. What the reports share is consistency: the entity filter means the same thing everywhere, the Marketing Dashboard and Revenue Projections are built to agree with each other, and the Cash Flow Forecast and Claims Monitor use the same insurance estimates.
 
 Every report that opens inside the Reports area has **Export Excel**, **Export PDF**, and **Print** buttons. Exports always reflect the filters you have set on screen — the spreadsheet or PDF matches what you are looking at, including a filter line at the top so the recipient knows exactly what they are seeing.
+
+Every Excel file is laid out the same way, so it reads cleanly for you and for whoever you send it to:
+
+- When a report has headline figures at the top of the screen, they are on a **Summary** sheet first; the tables follow on their own sheets.
+- Each sheet starts with the report's name and one line naming the filters and when it was made, then the table.
+- The column headings stay in place as you scroll down. On a wide table the column that names each row (the farm, the date) stays in place as you scroll right.
+- Numbers are real numbers — you can sort, filter and add them up — and dates are real dates.
+- Subtotals and totals are shaded and bold; long notes wrap inside their column instead of being cut off.
+- It prints on one page wide, with the headings repeated on every page and the page number at the bottom.
+
+A PDF keeps a group's label with its rows, never splits a short table across two pages, and numbers its pages "Page 1 of 3".
 
 ## Common questions
 
@@ -2295,7 +2316,7 @@ Yields turns your load log into bushels per acre. The same production can be vie
 - When a crop you grow both ways is in view — soybeans planted full-season on some fields and behind wheat on others — a **Cropping** control appears beside Practice: **All**, **Full-season**, or **Double-crop**. It works on every tab, stacks with the Practice filter (Irrigated + Double-crop is fine), and is remembered like the other filters. It only shows for a crop marked Double-crop under Settings → Crops in a year that actually has both kinds planted.
 - **Tap any row (or its ▸ button) to open its detail.** A field row shows the loads behind its yield; a farm, entity, landowner, or variety row shows its totals plus a field-by-field breakdown, and each field there opens further into its loads — two taps from a landowner (or a variety) to a scale ticket.
 - Bushels show as whole numbers and acres to one decimal, the same as every report.
-- Export any view to a spreadsheet or a formatted report — the export carries exactly the columns you're showing on screen, and when a row's detail is open the export adds a Load Detail sheet for it.
+- Export any view to a spreadsheet or a formatted report. The export carries the columns you're showing on screen (plus the farm, FSA number and year that identify each row), in the same order as the screen, with the average yield per crop on a Summary sheet. By entity is one table with a heading and a total for each entity; By landowner gets a sheet per landowner. When a row's detail is open, the export adds a sheet of that row's loads, named for the row.
 
 ## Reading the table
 

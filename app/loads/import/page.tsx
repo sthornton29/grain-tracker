@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { parseCsv } from '@/lib/csv'
+import { exportToCsv } from '@/lib/exports'
 import { reportError } from '@/lib/friendly-error'
 import type { Bin, Buyer, Contract, Crop, Field, Truck } from '@/lib/types'
 import Dropzone, { rejectMessage } from '@/components/dropzone'
@@ -82,15 +83,15 @@ const SAMPLE_SPOT_ROW = [
   'SPOT',
 ]
 
+// The fill-in template rides the one CSV writer (lib/exports): the header row
+// first, then the two sample rows. Its headers are the names this page reads
+// back, so they stay exactly as listed under "Headers expected".
 function downloadTemplate() {
-  const csv = TEMPLATE_HEADERS.join(',') + '\n' + SAMPLE_ROW.join(',') + '\n' + SAMPLE_SPOT_ROW.join(',') + '\n'
-  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = 'loads-template.csv'
-  a.click()
-  URL.revokeObjectURL(url)
+  void exportToCsv({
+    title: 'Loads import template',
+    filename: 'loads-template',
+    sections: [{ columns: TEMPLATE_HEADERS.map((label) => ({ label })), rows: [SAMPLE_ROW, SAMPLE_SPOT_ROW] }],
+  })
 }
 
 function norm(s: string | null | undefined): string {

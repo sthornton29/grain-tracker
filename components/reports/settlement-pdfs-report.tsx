@@ -143,21 +143,26 @@ export default function SettlementPdfsReport() {
   // A structured index of the bundled settlements (mirrors the eligible list),
   // to accompany the zip of PDFs for the audit.
   function buildPayload(): ExportPayload {
+    const missing = eligible.length - withPdf.length
     return {
       title: 'Bundled Settlement Statements',
-      filters: `${cropName || 'Crop'} · ${cropYear || '—'} crop`,
+      // The same line as the screen's header.
+      filters: filterSummaryOf(cropYear === '' ? null : cropYearLabel(cropYear), cropName || null),
       summary: [
-        { label: 'Eligible settlements', value: String(eligible.length) },
-        { label: 'With PDF (zipped)', value: String(withPdf.length) },
-        { label: 'Missing PDF', value: String(eligible.length - withPdf.length) },
+        { label: 'Settlements matching', value: String(eligible.length) },
+        { label: 'With PDF (in the zip)', value: String(withPdf.length), tone: 'favorable' },
+        { label: 'Missing PDF', value: String(missing), tone: missing > 0 ? 'warning' : 'neutral' },
       ],
       sections: [{
         title: 'Settlements',
         columns: [
-          { label: 'Date' }, { label: 'Settlement #' }, { label: 'Buyer' },
-          { label: 'Matched lines', align: 'right', format: 'int' }, { label: 'PDF' },
+          { label: 'Date', format: 'date' }, { label: 'Settlement #' }, { label: 'Buyer' },
+          { label: 'Matching loads', align: 'right', format: 'int' }, { label: 'PDF' },
         ],
-        rows: eligible.map((e) => [e.settlement_date, e.settlement_number ?? '', e.buyerName, e.matchingLineCount, e.source_pdf_url ? 'Yes' : 'Missing']),
+        rows: eligible.map((e) => [
+          e.settlement_date, e.settlement_number ?? '', e.buyerName, e.matchingLineCount,
+          e.source_pdf_url ? 'Yes' : { v: 'Missing', tone: 'warning' as const },
+        ]),
       }],
     }
   }

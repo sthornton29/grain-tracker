@@ -543,21 +543,24 @@ export default function GovernmentPaymentsReport({ onPayloadChange, headerAction
       { label: 'Total Govt', align: 'right', format: 'usd0' }, ...fmtCols('Total ARC/PLC'), { label: 'Other', align: 'right', format: 'usd0' },
     ]
     for (const c of shownCommodities) {
-      cols.push({ label: `${c.name} Base Ac`, align: 'right', format: 'int' })
+      cols.push({ label: `${c.name} Base Ac`, align: 'right', format: 'acres' })
       cols.push({ label: `${c.name} Program` })
       cols.push(...fmtCols(c.name))
       if (view !== 'projected') cols.push({ label: `${c.name} Status` })
     }
+    // A farm with no payee entity leaves the cell blank (the screen's dash).
+    const payeeText = (farmId: string) => { const n = payeeEntityName(farmId); return n === '—' ? '' : n }
     const rows: ExportCell[][] = farmRows.map((r) => {
-      const arcByView = view === 'projected' ? r.arcPlcTotal : view === 'received' ? (r.receivedTotal ?? 0) : r.effectiveTotal
+      // Received view, nothing received yet: blank, as on screen — not the Other payments alone.
+      const arcByView = view === 'projected' ? r.arcPlcTotal : view === 'received' ? r.receivedTotal : r.effectiveTotal
       const cells: ExportCell[] = [
-        r.farm.name, r.farm.fsa_number ?? '', payeeEntityName(r.farm.id),
-        Math.round(arcByView + r.other), ...fmtCells(r.arcPlcTotal, r.receivedTotal), Math.round(r.other),
+        r.farm.name, r.farm.fsa_number ?? '', payeeText(r.farm.id),
+        arcByView != null ? Math.round(arcByView + r.other) : '', ...fmtCells(r.arcPlcTotal, r.receivedTotal), Math.round(r.other),
       ]
       for (const c of shownCommodities) {
         const p = r.byCommodity.get(c.id)
         const v = r.rvpByCommodity.get(c.id)
-        cells.push(p ? Math.round(p.baseAcres) : '')
+        cells.push(p ? Number(p.baseAcres) : '')
         cells.push(v?.paidProgram ? PROGRAM_CODE_LABEL[v.paidProgram] : p ? ELECTION_LABEL[p.election] : '')
         cells.push(...fmtCells(p ? p.result.net : v ? v.projected : null, v?.received ?? null))
         if (view !== 'projected') cells.push(v ? RECEIVED_STATUS_LABEL[v.status] : '')
@@ -638,34 +641,71 @@ export default function GovernmentPaymentsReport({ onPayloadChange, headerAction
     if (actuals.statements.length > 0) {
       const stmtById = new Map(actuals.statements.map((s) => [s.id, s]))
       const payeeOf = (s: { payee_entity_id: string | null; payee_name: string }) => (s.payee_entity_id ? entityById.get(s.payee_entity_id)?.name ?? s.payee_name : s.payee_name)
-      const linesByStatement = new Map<string, number>()
-      for (const l of actuals.lines) linesByStatement.set(l.statement_id, (linesByStatement.get(l.statement_id) ?? 0) + 1)
+      // What each statement holds, as the Statements tab on screen lists it.
+      const byStatement = new Map<string, { lines: number; years: Set<number>; programs: Set<string> }>()
+      for (const l of actuals.lines) {
+        const cur = byStatement.get(l.statement_id) ?? { lines: 0, years: new Set<number>(), programs: new Set<string>() }
+        cur.lines += 1
+        if (l.program_year != null) cur.years.add(l.program_year)
+        cur.programs.add(PROGRAM_CODE_LABEL[l.program_code])
+        byStatement.set(l.statement_id, cur)
+      }
+      // These tabs are plain data sheets, so each brings its own heading: the
+      // report and the tab on one row, then the one-line note.
+      const tabTitle = (tab: string): ExportSection['prelude'] => [{ kind: 'title', cells: [`Government Payment Tracker — ${tab}`] }]
+      // Statements come newest first; their lines follow in the order printed
+      // (by page), and each line's crop amounts follow the line.
+      const statementOrder = new Map(actuals.statements.map((s, i) => [s.id, i]))
+      const sortedLines = [...actuals.lines].sort((a, b) =>
+        ((statementOrder.get(a.statement_id) ?? 1e9) - (statementOrder.get(b.statement_id) ?? 1e9)) || ((a.page_number ?? 0) - (b.page_number ?? 0)))
+      const lineOrder = new Map(sortedLines.map((l, i) => [l.id, i]))
+      const sortedCropAmounts = [...actuals.cropAmounts].sort((a, b) => (lineOrder.get(a.line_id) ?? 1e9) - (lineOrder.get(b.line_id) ?? 1e9))
       sections.push({
         key: SECTION.statements, title: 'Statements', plain: true,
-        note: 'Every FSA Payment Statement uploaded, newest first. Blue = from the statement; the Lines and Crop Amounts tabs carry the detail.',
+        prelude: tabTitle('Statements'),
+        note: 'Every FSA Payment Statement uploaded, newest first. Blue = from the statement; the Statement Lines and Crop Amounts tabs carry the detail.',
         columns: [
-          { key: 'date', label: 'Statement date', width: 14 }, { key: 'office', label: 'Office', width: 24 }, { key: 'payee', label: 'Payee', width: 24 },
+          { key: 'date', label: 'Statement date', width: 14, format: 'date' }, { key: 'payee', label: 'Payee', width: 24 }, { key: 'office', label: 'Office', width: 24 },
           { key: 'gross', label: 'Gross', align: 'right', format: 'usd2' }, { key: 'deductions', label: 'Deductions', align: 'right', format: 'usd2' },
           { key: 'net', label: 'Net', align: 'right', format: 'usd2' }, { key: 'lines', label: 'Lines', align: 'right', format: 'int' },
-          { key: 'pages', label: 'Pages', align: 'right', format: 'int' }, { key: 'doc', label: 'Document', width: 40 },
+          { key: 'years', label: 'Program years', width: 14 }, { key: 'programs', label: 'Programs', width: 18 },
+          { key: 'pages', label: 'Pages', align: 'right', format: 'int' }, { key: 'doc', label: 'Document' },
         ],
-        rows: actuals.statements.map((s): ExportCell[] => [
-          input(s.statement_date), input(s.office_name ?? ''), input(payeeOf(s)), input(Number(s.gross_payment), 'usd2'), input(Number(s.deductions), 'usd2'), input(Number(s.net_payment), 'usd2'),
-          input(linesByStatement.get(s.id) ?? 0, 'int'), input(s.page_count ?? null, 'int'), s.document_url ? { v: 'PDF', link: s.document_url } : '',
-        ]),
+        rows: actuals.statements.map((s): ExportCell[] => {
+          const b = byStatement.get(s.id)
+          return [
+            input(s.statement_date), input(payeeOf(s)), input(s.office_name ?? ''), input(Number(s.gross_payment), 'usd2'), input(Number(s.deductions), 'usd2'), input(Number(s.net_payment), 'usd2'),
+            input(b?.lines ?? 0, 'int'), input(b ? [...b.years].sort().join(', ') : ''), input(b ? [...b.programs].join(', ') : ''),
+            input(s.page_count ?? null, 'int'), s.document_url ? { v: 'PDF', link: s.document_url } : '',
+          ]
+        }),
       })
+      // The Statements tab's calendar-year list (the 1099-G figure per payee).
+      if (yearTotals.length > 0) {
+        sections.push({
+          title: 'Received by Calendar Year', plain: true,
+          prelude: tabTitle('FSA Payments Received by Calendar Year'),
+          note: 'Every statement line’s net, in the year of its payment date — the figure to reconcile against the 1099-G.',
+          columns: [
+            { label: 'Calendar year', align: 'right', format: 'text' }, { label: 'Payee', width: 24 },
+            { label: 'Lines', align: 'right', format: 'int' }, { label: 'Net received', align: 'right', format: 'usd2' },
+          ],
+          rows: yearTotals.map((t): ExportCell[] => [t.year, t.payeeEntityId ? entityById.get(t.payeeEntityId)?.name ?? t.payeeName : t.payeeName, t.lines, t.net]),
+        })
+      }
       sections.push({
-        key: SECTION.lines, title: 'Lines', plain: true,
-        note: 'One row per payment block (FSA Payment ID). Bank detail is the last four digits only.',
+        key: SECTION.lines, title: 'Statement Lines', plain: true,
+        prelude: tabTitle('Statement Lines'),
+        note: 'One row per payment block (FSA Payment ID), newest statement first. Bank detail is the last four digits only.',
         columns: [
-          { key: 'date', label: 'Statement date', width: 14 }, { key: 'payee', label: 'Payee', width: 22 }, { key: 'id', label: 'FSA Payment ID', width: 14 }, { key: 'tcn', label: 'Transaction control #', width: 18 },
+          { key: 'date', label: 'Statement date', width: 14, format: 'date' }, { key: 'payee', label: 'Payee', width: 22 }, { key: 'id', label: 'FSA Payment ID', width: 14 }, { key: 'tcn', label: 'Transaction control #', width: 18 },
           { key: 'program', label: 'Program', width: 10 }, { key: 'program_raw', label: 'Program title', width: 36 }, { key: 'year', label: 'Program year', align: 'right', format: 'text' },
           { key: 'farm', label: 'Farm', width: 24 }, { key: 'fsa', label: 'FSA #', width: 8 },
           { key: 'gross', label: 'Gross', align: 'right', format: 'usd2' }, { key: 'deductions', label: 'Deductions', align: 'right', format: 'usd2' }, { key: 'net', label: 'Net', align: 'right', format: 'usd2' },
-          { key: 'paid', label: 'Payment date', width: 14 }, { key: 'method', label: 'Method', width: 8 }, { key: 'bank', label: 'Bank', width: 28 }, { key: 'last4', label: 'Account (last 4)', width: 10 },
+          { key: 'paid', label: 'Payment date', width: 14, format: 'date' }, { key: 'method', label: 'Method', width: 8 }, { key: 'bank', label: 'Bank', width: 28 }, { key: 'last4', label: 'Account (last 4)', width: 10 },
           { key: 'sequester', label: 'Sequester', align: 'right', format: 'pct1' },
         ],
-        rows: actuals.lines.map((l): ExportCell[] => {
+        rows: sortedLines.map((l): ExportCell[] => {
           const s = stmtById.get(l.statement_id)
           return [
             input(s?.statement_date ?? ''), input(s ? payeeOf(s) : ''), input(l.fsa_payment_id), input(l.transaction_control_number ?? ''),
@@ -680,13 +720,15 @@ export default function GovernmentPaymentsReport({ onPayloadChange, headerAction
       const lineById = new Map(actuals.lines.map((l) => [l.id, l]))
       sections.push({
         key: SECTION.crops, title: 'Crop Amounts', plain: true,
+        prelude: tabTitle('Crop Amounts'),
         note: 'The Crop and Payment Amount Detail of every ARC/PLC block — the received payment per farm × crop × program year. The Received vs Projected tab sums this tab.',
         columns: [
-          { key: 'date', label: 'Statement date', width: 14 }, { key: 'id', label: 'FSA Payment ID', width: 14 }, { key: 'program', label: 'Program', width: 10 },
+          { key: 'date', label: 'Statement date', width: 14, format: 'date' }, { key: 'id', label: 'FSA Payment ID', width: 14 }, { key: 'program', label: 'Program', width: 10 },
           { key: 'program_year', label: 'Program year', align: 'right', format: 'text' }, { key: 'farm', label: 'Farm', width: 24 }, { key: 'fsa', label: 'FSA #', width: 8 },
-          { key: 'commodity', label: 'Commodity', width: 16 }, { key: 'raw', label: 'As printed', width: 16 }, { key: 'amount', label: 'Amount', align: 'right', format: 'usd2' }, { key: 'paid', label: 'Payment date', width: 14 },
+          { key: 'commodity', label: 'Commodity', width: 16 }, { key: 'raw', label: 'As printed', width: 16 }, { key: 'amount', label: 'Amount', align: 'right', format: 'usd2' },
+          { key: 'paid', label: 'Payment date', width: 14, format: 'date' },
         ],
-        rows: actuals.cropAmounts.map((c): ExportCell[] => {
+        rows: sortedCropAmounts.map((c): ExportCell[] => {
           const l = lineById.get(c.line_id)
           const s = l ? stmtById.get(l.statement_id) : undefined
           return [
@@ -699,9 +741,25 @@ export default function GovernmentPaymentsReport({ onPayloadChange, headerAction
       if (programYear !== '' && rvpRows.length > 0) {
         const C = (c: string) => col(SECTION.crops, c)
         const receivedF = (): FormulaNode => sumifs(C('amount'), [C('farm'), exactCriterion(self('farm'))], [C('commodity'), exactCriterion(self('commodity'))], [C('program_year'), self('program_year')])
+        // Farms in the order of the table on screen, each farm's commodities in column order.
+        const farmOrder = new Map(shownFarms.map((f, i) => [f.id, i]))
+        const commodityOrder = new Map(shownCommodities.map((c, i) => [c.id, i]))
+        const rvpSorted = rvpRows.filter((r) => farmOrder.has(r.farmId)).sort((a, b) =>
+          ((farmOrder.get(a.farmId) ?? 0) - (farmOrder.get(b.farmId) ?? 0)) || ((commodityOrder.get(a.commodityId) ?? 1e9) - (commodityOrder.get(b.commodityId) ?? 1e9)))
+        // A PLC rate is dollars per bushel or pound, to four decimals as on
+        // screen ('price4' is the four-decimal dollar format); an ARC rate is dollars
+        // per base acre. The Rate basis column says which.
+        const rateFormat = (program: 'PLC' | 'ARC_CO' | 'ARC_IC'): NumFmt => (program === 'PLC' ? 'price4' : 'usd2')
+        const rateBasis = (r: ReceivedVsProjected) => (!r.implied ? ''
+          : r.implied.program === 'PLC' ? `$ per ${commodityById.get(r.commodityId)?.unit === 'pound' ? 'lb' : 'bu'}` : '$ per base acre')
         sections.push({
           key: SECTION.rvp, title: 'Received vs Projected', plain: true,
-          note: `Program year ${programYear}: Received is a live SUMIFS over the Crop Amounts tab (farm × commodity × program year); Variance = Received − Projected. Blue = from Turnrow; black = formulas.`,
+          prelude: tabTitle('Received vs Projected'),
+          note: `Program year ${programYear}, one row per farm and commodity. Received adds up the Crop Amounts tab for that farm, commodity and program year; Variance = Received − Projected.`,
+          postlude: [
+            { kind: 'text', cells: ['Blue = from Turnrow; black = formulas, so an amount corrected on the Crop Amounts tab carries through to Received and Variance.'] },
+            { kind: 'text', cells: ['Implied rate is the rate the payment received works out to on the farm’s base acres (and PLC yield, for PLC); Projected rate is the projection on the same basis.'] },
+          ],
           columns: [
             { key: 'farm', label: 'Farm', width: 24 }, { key: 'fsa', label: 'FSA #', width: 8 }, { key: 'entity', label: `Entity (${programYear} payee)`, width: 22 },
             { key: 'commodity', label: 'Commodity', width: 16 }, { key: 'program_year', label: 'Program year', align: 'right', format: 'text' },
@@ -709,14 +767,16 @@ export default function GovernmentPaymentsReport({ onPayloadChange, headerAction
             { key: 'projected', label: 'Projected', align: 'right', format: 'usd2' }, { key: 'received', label: 'Received', align: 'right', format: 'usd2' }, { key: 'variance', label: 'Variance', align: 'right', format: 'usd2' },
             { key: 'status', label: 'Status', width: 30 }, { key: 'cause', label: 'Variance cause', width: 26 },
             { key: 'implied', label: 'Implied rate', align: 'right', format: 'dec2' }, { key: 'projected_rate', label: 'Projected rate', align: 'right', format: 'dec2' },
+            { key: 'rate_basis', label: 'Rate basis', width: 16 },
           ],
-          rows: rvpRows.filter((r) => shownFarms.some((f) => f.id === r.farmId)).map((r): ExportCell[] => [
-            input(farmById.get(r.farmId)?.name ?? ''), input(farmById.get(r.farmId)?.fsa_number ?? ''), input(payeeEntityName(r.farmId)),
+          rows: rvpSorted.map((r): ExportCell[] => [
+            input(farmById.get(r.farmId)?.name ?? ''), input(farmById.get(r.farmId)?.fsa_number ?? ''), input(payeeText(r.farmId)),
             input(commodityById.get(r.commodityId)?.name ?? ''), input(r.programYear, 'text'),
             input(r.projectedProgram ? ELECTION_LABEL[r.projectedProgram] : ''), input(r.paidProgram ? PROGRAM_CODE_LABEL[r.paidProgram] : ''),
             input(Math.round(r.projected * 100) / 100, 'usd2'), formula(receivedF(), 'usd2'), formula(sub(self('received'), self('projected')), 'usd2'),
             input(RECEIVED_STATUS_LABEL[r.status]), input(r.cause ? VARIANCE_CAUSE_LABEL[r.cause] : ''),
-            r.implied ? input(r.implied.implied, r.implied.program === 'PLC' ? 'dec2' : 'usd2') : '', r.implied?.projected != null ? input(r.implied.projected, r.implied.program === 'PLC' ? 'dec2' : 'usd2') : '',
+            r.implied ? input(r.implied.implied, rateFormat(r.implied.program)) : '', r.implied?.projected != null ? input(r.implied.projected, rateFormat(r.implied.program)) : '',
+            input(rateBasis(r)),
           ]),
         })
       }
@@ -725,7 +785,13 @@ export default function GovernmentPaymentsReport({ onPayloadChange, headerAction
     return {
       title: 'Government Payment Tracker',
       filters: filterSummary,
-      summary: summaryCards.map((c) => ({ label: c.label, value: c.value, sub: c.sub, tone: c.tone })),
+      summary: [
+        ...summaryCards.map((c) => ({ label: c.label, value: c.value, sub: c.sub, tone: c.tone })),
+        // The "Variance explained" tiles: received − projected on the paid lines, by cause.
+        ...(anyReceived ? (['RATE', 'ACRES_YIELD', 'SEQUESTER', 'PROGRAM'] as const).map((k) => ({
+          label: `Variance — ${VARIANCE_CAUSE_LABEL[k]}`, value: fmtUsd(kpis.byCause[k]), tone: varianceTone(kpis.byCause[k]),
+        })) : []),
+      ],
       sections,
     }
   }

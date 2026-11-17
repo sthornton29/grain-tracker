@@ -7,7 +7,7 @@ import { createClient } from '@/lib/supabase/client'
 import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import ExportBar from '@/components/export-bar'
-import { formatNumber, type ExportPayload } from '@/lib/exports'
+import { formatNumber, type ExportCell, type ExportPayload } from '@/lib/exports'
 import { checkoffByCrop } from '@/lib/checkoff'
 import { fmtDate } from '@/lib/format-date'
 import { FilterField, ReportFilterBar, EmptyState, selectCls, inputCls, theadCls, fmtInt, fmtUsd, fmtNum } from '@/components/reports/report-kit'
@@ -351,7 +351,8 @@ export default function SettlementsListPage() {
     parts.push(buyerId ? buyers.find((b) => b.id === buyerId)?.name ?? 'Buyer' : 'All buyers')
     parts.push(entityId ? entities.find((e) => e.id === entityId)?.name ?? 'Entity' : 'All entities')
     parts.push(cropYear !== '' ? `${cropYear} crop` : 'All crop years')
-    parts.push(contractId ? `#${contracts.find((c) => c.id === contractId)?.contract_number ?? contractId}` : 'All contracts')
+    const contractNumber = contracts.find((c) => c.id === contractId)?.contract_number
+    parts.push(contractId ? (contractNumber ? `Contract #${contractNumber}` : 'One contract') : 'All contracts')
     if (q) parts.push(`“${q}”`)
     parts.push(`${filtered.length} settlement${filtered.length === 1 ? '' : 's'}`)
     return parts.join(' · ')
@@ -373,24 +374,38 @@ export default function SettlementsListPage() {
         { label: 'Net revenue', value: formatNumber(totals.netRev, 'usd0') },
       ],
       sections: [{
+        title: 'Settlements',
         columns: [
-          { label: 'Date' },
+          { label: 'Date', format: 'date' },
           { label: 'Settlement #' },
           { label: 'Buyer' },
           { label: 'Lines', align: 'right', format: 'int' },
-          { label: 'Unmatched', align: 'right', format: 'int' },
+          { label: 'Need matching', align: 'right', format: 'int' },
           { label: 'Net bu', align: 'right', format: 'bu' },
           { label: 'Net revenue', align: 'right', format: 'usd0' },
+          { label: 'Document' },
         ],
         rows: [
-          ...filtered.map((r, i) => [
-            fmtDate(r.settlement_date), r.settlement_number ?? '—', r.buyer?.name ?? '',
-            stats[i].count, stats[i].unmatched, stats[i].netBu, stats[i].netRev,
+          ...filtered.map((r, i): ExportCell[] => [
+            r.settlement_date, r.settlement_number ?? '', r.buyer?.name ?? '',
+            stats[i].count, { v: stats[i].unmatched, tone: stats[i].unmatched > 0 ? 'warning' : 'muted' }, stats[i].netBu, stats[i].netRev,
+            r.source_pdf_url ? 'On file' : '',
           ]),
-          ['Total', '', '', totals.count, totals.unmatched, totals.netBu, totals.netRev],
+          ['Total', '', '', totals.count, totals.unmatched, totals.netBu, totals.netRev, ''],
         ],
         rowMeta: [...filtered.map(() => 'data' as const), 'total'],
-      }],
+      },
+      // Checkoff paid — the screen's second table, over the same settlements.
+      ...(checkoffRows.length > 0 ? [{
+        title: 'Checkoff paid',
+        columns: [
+          { label: 'Crop' }, { label: 'Crop year', format: 'text' as const },
+          { label: 'Checkoff $', align: 'right' as const, format: 'usd2' as const }, { label: '¢/bu', align: 'right' as const, format: 'dec2' as const },
+          { label: 'Settled bu', align: 'right' as const, format: 'bu' as const }, { label: 'Settlements', align: 'right' as const, format: 'int' as const },
+        ],
+        rows: checkoffRows.map((r): ExportCell[] => [cropName(r.cropId), r.cropYear ?? '', r.dollars, r.centsPerBu ?? '', r.settledBu, r.settlements]),
+      }] : []),
+      ],
     }
   }
 

@@ -697,7 +697,8 @@ export default function IncomeSensitivityReport({ onPayloadChange, headerActions
 
   // ----- Export payload (shared lib/exports.ts layer) -----
   function buildExportPayload(): ExportPayload {
-    const viewLabel = view === 'profit' ? 'Net profit/acre' : 'Revenue/acre'
+    // The same words the report header uses for the cell value.
+    const viewLabel = view === 'profit' ? 'Net profit per acre' : 'Revenue per acre'
     const govLabel = includeGov
       ? `Government payments: included (flat ${formatNumber(govPerAcre, 'usd2')}/ac across all crops)`
       : 'Government payments: excluded'
@@ -707,23 +708,35 @@ export default function IncomeSensitivityReport({ onPayloadChange, headerActions
         // Cotton axes display $/lb × lbs/ac (¢ stored); grains $/bu × bu/ac.
         const isCotton = isCottonCrop(v.crop.name)
         const qty = isCotton ? 'lbs' : 'bu'
+        const yUnit = isCotton ? 'lbs/ac' : 'bu/ac'
+        const fmtP = (n: number) => formatNumber(n, isCotton ? 'cents' : 'price')
         const columns = [
-          { label: `${v.symbol ? `${v.symbol} futures` : 'Futures'} ${isCotton ? '$/lb' : '$/bu'}`, align: 'right' as const, format: (isCotton ? 'cents' : 'price') as 'cents' | 'price' },
+          { label: `${v.symbol ? `${v.symbol} futures` : 'Futures'} (${isCotton ? '$/lb' : '$/bu'})`, align: 'right' as const, format: (isCotton ? 'cents' : 'price') as 'cents' | 'price' },
           ...v.yieldValues.map((y) => ({
-            label: `${formatNumber(y, 'yield')} ${isCotton ? 'lbs/ac' : 'bu/ac'}${v.split.state === 'complete' ? ' (actual)' : ''}`,
+            label: `${formatNumber(y, 'yield')} ${yUnit}${v.split.state === 'complete' ? ' (actual)' : ''}`,
             align: 'right' as const, format: 'usd2' as const,
           })),
         ]
+        // The screen's two-row header: futures prices run down the side, and
+        // the yield axis spans the scenario columns.
+        const yieldAxis = v.split.state === 'partial'
+          ? `each yield on the remaining ${formatNumber(v.split.remainingAcres, 'int')} acres`
+          : v.split.state === 'complete' ? 'the actual yield' : 'each yield'
+        const groups = [{ label: '', span: 1 }, { label: `${viewLabel} at ${yieldAxis} (${yUnit})`, span: v.yieldValues.length }]
         const regime = v.contractedBu + v.openHedgeBu > 0
           ? `${formatNumber(v.contractedBu, 'bu')} ${qty} contracted${v.openHedgeBu > 0 ? ` + ${formatNumber(v.openHedgeBu, 'bu')} ${qty} hedged` : ''} at locked prices — scenario price applies to remaining ${isCotton ? 'lbs' : 'bushels'}`
           : 'No contracts — fully price-sensitive'
         const harvestNote = v.split.state === 'partial'
-          ? ` · Harvested so far: ${formatNumber(v.split.fixedBu, 'bu')} bu on ${formatNumber(v.split.completedAcres, 'acres')} ac (actual); yield axis applies to the remaining ${formatNumber(v.split.remainingAcres, 'acres')} ac`
+          ? ` · Harvested so far: ${formatNumber(v.split.fixedBu, 'bu')} ${qty} on ${formatNumber(v.split.completedAcres, 'acres')} ac (actual); yield axis applies to the remaining ${formatNumber(v.split.remainingAcres, 'acres')} ac`
           : v.split.state === 'complete'
             ? ' · Harvest complete — yield is actual; table is price-only'
             : ''
+        // The crop's own county yield scenario (a per-crop setting on screen).
+        const countyNote = v.hasCountyLegs
+          ? ` · County yield scenario: ${v.countyPinned ? 'final county yield on file' : v.countyMode === 'with_farm' ? 'moves with farm yield' : 'independent'}`
+          : ''
         const rows: ExportCell[][] = [
-          [`${regime}${harvestNote}`, ...v.yieldValues.map(() => '')],
+          [`${regime}${harvestNote}${countyNote}`, ...v.yieldValues.map(() => '')],
           ...v.grid.map((row, ri) => [
             v.priceValues[ri],
             ...row.map((cell): ExportCell => {
@@ -733,23 +746,45 @@ export default function IncomeSensitivityReport({ onPayloadChange, headerActions
             }),
           ]),
         ]
+        // The notes the screen prints around each table, under it here. A file
+        // carries no highlight, so today's price and the expected yield (the
+        // highlighted row and column on screen) are spelled out.
+        const insuranceWarning = v.grid.flat().find((c) => c.insuranceWarning)?.insuranceWarning
+        const loan = isCotton ? v.inputs.cottonPhysical : null
+        const notes = [
+          [
+            v.currentPrice != null ? `Today's ${v.symbol ?? 'futures'} price: ${fmtP(v.currentPrice)}${v.currentQuote?.source === 'manual' ? ' (a manual quote)' : ''}` : null,
+            v.expectedYield != null ? `${v.split.state === 'complete' ? 'Actual' : 'Expected'} yield: ${formatNumber(v.expectedYield, 'yield')} ${yUnit}` : null,
+          ].filter(Boolean).join(' · '),
+          v.finalHarvestPrice != null
+            ? `RMA final harvest price ${formatNumber(v.finalHarvestPrice, 'price')} on file — insurance in every cell uses it; the price axis moves crop sales only.`
+            : '',
+          loan != null && loan.loanFloorCents != null && loan.inLoanLbs > 0
+            ? `CCC loan floor ${formatNumber(loan.loanFloorCents, 'cents')} on ${formatNumber(loan.inLoanLbs, 'lbs')} lbs — pounds in the loan are valued at the higher of the loan value and the scenario price.`
+            : '',
+          view === 'profit' && v.inputs.assumption?.cost_per_acre == null
+            ? `No cost per acre is set for ${v.crop.name}, so net profit cannot be shown. Set it in the Marketing Dashboard assumptions.`
+            : '',
+          insuranceWarning
+            ? `${insuranceWarning} Insurance dollars in this table are unreliable until the policy's price is corrected.`
+            : '',
+        ].filter((s) => s !== '')
         return {
           title: v.crop.name,
+          groups,
           columns,
           rows,
           rowMeta: ['subhead' as const, ...v.grid.map(() => 'data' as const)],
+          postlude: notes.length > 0 ? notes.map((s) => ({ kind: 'text' as const, cells: [s] })) : undefined,
         }
       })
-    // County scenario mode per crop, carried into the export filter line.
-    const countyLabels = cropViews
-      .filter((v) => v.hasCountyLegs)
-      .map((v) => `${v.crop.name}: ${v.countyPinned ? 'final county yield on file' : v.countyMode === 'with_farm' ? 'moves with farm yield' : 'independent'}`)
-    const countyLabel = countyLabels.length > 0 ? `County: ${countyLabels.join(', ')}` : null
     return {
       title: 'Income Sensitivity',
-      filters: filterSummaryOf(cropYear === '' ? null : cropYearLabel(cropYear), entityName ?? 'All Entities', viewLabel, govLabel, countyLabel),
+      // The report header's line, plus the government-payments switch. Each
+      // crop's county yield scenario rides with that crop's table.
+      filters: filterSummaryOf(cropYear === '' ? null : cropYearLabel(cropYear), entityName ?? 'All Entities', viewLabel, govLabel),
       // Never export zero sections (exceljs needs at least one sheet).
-      sections: sections.length > 0 ? sections : [{ columns: [{ label: 'No sensitivity tables' }], rows: [] }],
+      sections: sections.length > 0 ? sections : [{ title: 'Income Sensitivity', columns: [{ label: 'No sensitivity tables' }], rows: [] }],
       orientation: 'landscape',
     }
   }

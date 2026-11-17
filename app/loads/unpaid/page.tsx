@@ -5,7 +5,7 @@ import { computeBushels } from '@/lib/shrink'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import StaticExportBar from '@/components/static-export-bar'
 import { fmtDate } from '@/lib/format-date'
-import type { ExportPayload } from '@/lib/exports'
+import type { ExportCell, ExportPayload } from '@/lib/exports'
 import { loadTicketKeys } from '@/lib/ticket-matching'
 import { describeSale, fetchLoadSales, saleAllocations, saleKind, type LoadSale, type SaleAllocation, type SaleLoad } from '@/lib/load-sales'
 import { spotPriceChip } from '@/lib/spot-price'
@@ -198,15 +198,34 @@ export default async function UnpaidLoadsPage({
   const usd2 = (n: number) => `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
   const usd4 = (n: number) => `$${n.toLocaleString('en-US', { minimumFractionDigits: 4, maximumFractionDigits: 4 })}`
 
-  const exportRow = (r: UnpaidRow) => [
-    fmtDate(r.load.date), r.load.ticket_number ?? '', r.load.crop?.name ?? '', r.load.crop_year ?? '', r.load.buyer?.name ?? '',
-    r.saleText + (r.chips.length > 0 ? ` (${r.chips.join('; ')})` : ''),
-    r.pricePerBu != null ? Math.round(r.pricePerBu * 10000) / 10000 : '', r.dryBu, r.value != null ? r.value : '',
-  ]
+  const round4 = (n: number) => Math.round(n * 10000) / 10000
+  const exportRow = (r: UnpaidRow): ExportCell[] => {
+    const sale = r.saleText + (r.chips.length > 0 ? ` (${r.chips.join('; ')})` : '')
+    return [
+      // The raw day under the 'date' format: a real date in Excel.
+      r.load.date, r.load.ticket_number ?? '', r.load.crop?.name ?? '', r.load.crop_year ?? '', r.load.buyer?.name ?? '',
+      // Amber on screen when the load has no sale type yet.
+      r.kind === 'unassigned' ? { v: sale, tone: 'warning' } : sale,
+      r.pricePerBu != null ? round4(r.pricePerBu) : '', r.dryBu, r.value != null ? r.value : '',
+    ]
+  }
   const exportColumns: ExportPayload['sections'][number]['columns'] = [
-    { label: 'Date' }, { label: 'Ticket' }, { label: 'Crop' }, { label: 'Crop year', format: 'text' },
+    { label: 'Date', format: 'date' }, { label: 'Ticket' }, { label: 'Crop' }, { label: 'Crop year', format: 'text' },
     { label: 'Buyer' }, { label: 'Sale' }, { label: 'Price/bu', align: 'right', format: 'price' },
     { label: 'Dry bu', align: 'right', format: 'bu' }, { label: 'Value', align: 'right', format: 'usd0' },
+  ]
+  // The By buyer list as real numbers: one column per kind of sale, the
+  // weighted price beside its bushels, and the words the screen puts in
+  // parentheses ("est.", "no price yet") in a note at the end.
+  const buyerRow = (b: BuyerSub): ExportCell[] => [
+    b.name,
+    b.contractBu > 0 ? b.contractBu : '',
+    b.contractPricedBu > 0 ? round4(b.contractDollars / b.contractPricedBu) : '',
+    b.spotBu > 0 ? b.spotBu : '',
+    b.spotPricedBu > 0 ? round4(b.spotDollars / b.spotPricedBu) : '',
+    b.laterBu > 0 ? b.laterBu : '',
+    b.unassignedBu > 0 ? b.unassignedBu : '',
+    b.spotBu <= 0 ? '' : b.spotPricedBu <= 0 ? 'Spot not priced yet' : b.estimated ? 'Spot price is an estimate' : '',
   ]
   const exportPayload: ExportPayload = {
     title: 'Unpaid Loads',
@@ -220,13 +239,17 @@ export default async function UnpaidLoadsPage({
     sections: [
       {
         title: 'Contract and spot',
+        // Date + Ticket stay in view beside the long Sale text.
+        freezeColumns: 2,
         columns: exportColumns,
-        rows: [...priced.map(exportRow), ['Total', '', '', '', '', '', '', pricedTotals.dryBu, pricedTotals.value]],
+        // No value at all (nothing priced) is a blank, as on screen — not $0.
+        rows: [...priced.map(exportRow), ['Total', '', '', '', '', '', '', pricedTotals.dryBu, pricedTotals.anyValue ? pricedTotals.value : '']],
         rowMeta: [...priced.map(() => 'data' as const), 'total'],
       },
       ...(priceLater.length > 0
         ? [{
             title: 'Price later (not yet priced)',
+            freezeColumns: 2,
             columns: exportColumns,
             rows: [...priceLater.map(exportRow), ['Total', '', '', '', '', '', '', laterTotals.dryBu, '']],
             rowMeta: [...priceLater.map(() => 'data' as const), 'total' as const],
@@ -234,8 +257,17 @@ export default async function UnpaidLoadsPage({
         : []),
       {
         title: 'By buyer',
-        columns: [{ label: 'Buyer' }, { label: 'Outstanding' }],
-        rows: buyerSubs.map((b) => [b.name, buyerLine(b)]),
+        columns: [
+          { label: 'Buyer' },
+          { label: 'Contract (bu)', align: 'right', format: 'bu' },
+          { label: 'Avg contract price ($/bu)', align: 'right', format: 'price' },
+          { label: 'Spot (bu)', align: 'right', format: 'bu' },
+          { label: 'Avg spot price ($/bu)', align: 'right', format: 'price' },
+          { label: 'Price later (bu)', align: 'right', format: 'bu' },
+          { label: 'Unassigned (bu)', align: 'right', format: 'bu' },
+          { label: 'Note' },
+        ],
+        rows: buyerSubs.map(buyerRow),
       },
     ],
   }

@@ -102,6 +102,31 @@ Canonical metric → format (the consistency contract in `lib/exports.ts`
   numFmt (sortable/summable); PDF gets formatted strings; print uses
   `.print-area` / `.no-print` CSS in `app/globals.css`. Never write a
   one-off CSV/xlsx/pdf path.
+- **Export layout contract** (2026-11-17; the renderer enforces it and
+  `lib/export-layout.test.ts` pins it — a payload's job is only what goes
+  IN the file):
+  - **The table starts at the top; freeze panes hold only its header.**
+    Everything above a header is frozen with it, so nothing sits there but
+    a title and one line of context — never KPI strips, contents lists or
+    paragraphs (those are `postlude`, written UNDER the table). A header
+    below row `MAX_FROZEN_ROWS` (6) throws under test. `freezeColumns` is
+    only for short identifying columns (Farm + Field, Date + Ticket #) on a
+    wide table; the renderer caps the frozen strip at `MAX_FROZEN_WIDTH`.
+    `singleSheet` (stacked tables) freezes nothing and is for documents
+    (a ticket, a statement), never big tables.
+  - **The export mirrors the screen**: same columns, order, grouping,
+    subtotals and wording. An export that leads with something the screen
+    doesn't show (the old Crop Insurance audit workbook) is a bug — put the
+    report first and supporting detail on later sheets.
+  - **Numbers are numbers, dates are dates, blank is blank**: a JS number +
+    `format`; an ISO `'YYYY-MM-DD'` string + `format: 'date'`; `''`/`null`
+    for nothing (never `'—'`, never a pre-formatted string in a table cell).
+  - No internal ids, enum codes or column names in a file a customer
+    forwards; a link to a record reads "Open".
+  - **Look at the real file before calling an export done**:
+    `EXPORT_DUMP_DIR=<folder> npx vitest run lib/export-dump.test.ts` writes
+    sample .xlsx/.pdf files (add the new payload to that test); open them in
+    Excel at a laptop-sized window and scroll down AND right.
 - **Nav**: `lib/nav-links.ts` (`navLinksFor`) is the single source of truth —
   the top nav (`components/nav.tsx`) and the landing tiles (`app/page.tsx`)
   both render from it. New pages/roles change nav there only, and role

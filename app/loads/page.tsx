@@ -492,7 +492,9 @@ export default function LoadsPage() {
     if (cropId) parts.push(crops.find((c) => c.id === cropId)?.name ?? 'Crop')
     if (contractId) {
       const kind = SALE_FILTERS.find((f) => f.value === contractId)
-      parts.push(kind ? kind.label : `#${contracts.find((c) => c.id === contractId)?.contract_number ?? contractId}`)
+      // Never the record's internal id: this line is printed on every export.
+      const number = contracts.find((c) => c.id === contractId)?.contract_number
+      parts.push(kind ? kind.label : number ? `#${number}` : 'Contract')
     }
     if (q) parts.push(`“${q}”`)
     parts.push(`${count} load${count === 1 ? '' : 's'}`)
@@ -508,12 +510,15 @@ export default function LoadsPage() {
       filters: filterSummary(rowsToExport.length),
       filename: `loads${suffix}-${new Date().toISOString().slice(0, 10)}`,
       sections: [{
+        // The sheet tab; Date + Time + Ticket stay in view while the 19 columns scroll.
+        title: 'Loads',
+        freezeColumns: 3,
         columns: [
-          { label: 'Date' }, { label: 'Time' }, { label: 'Ticket' }, { label: 'Truck' }, { label: 'Crop' },
+          { label: 'Date', format: 'date' }, { label: 'Time' }, { label: 'Ticket' }, { label: 'Truck' }, { label: 'Crop' },
           { label: 'From' }, { label: 'To' }, { label: 'Contract' }, { label: 'Sale' }, { label: 'Payment' },
-          { label: 'Gross lb', align: 'right', format: 'int' }, { label: 'Tare lb', align: 'right', format: 'int' }, { label: 'Net lb', align: 'right', format: 'int' },
+          { label: 'Gross (lb)', align: 'right', format: 'lbs' }, { label: 'Tare (lb)', align: 'right', format: 'lbs' }, { label: 'Net (lb)', align: 'right', format: 'lbs' },
           { label: 'Wet bu', align: 'right', format: 'bu' }, { label: 'Dry bu', align: 'right', format: 'bu' },
-          { label: 'Moisture %', align: 'right', format: 'dec1' }, { label: 'Test wt', align: 'right', format: 'dec1' },
+          { label: 'Moisture (%)', align: 'right', format: 'dec1' }, { label: 'Test wt (lb/bu)', align: 'right', format: 'dec1' },
           { label: 'Split' }, { label: 'Split details' },
         ],
         rows: rowsToExport.map((r): ExportCell[] => {
@@ -523,7 +528,7 @@ export default function LoadsPage() {
           const splitDetails = isSplit
             ? [...rSplits!]
                 .sort((a, b) => b.net_weight - a.net_weight)
-                .map((s) => `${fieldNameById.get(s.field_id) ?? '?'}: ${s.dry_bushels != null ? fmtInt(s.dry_bushels) : ''} bu (${s.percentage.toFixed(1)}%)`)
+                .map((s) => `${fieldNameById.get(s.field_id) ?? 'Unknown field'}: ${s.dry_bushels != null ? fmtInt(s.dry_bushels) : ''} bu (${s.percentage.toFixed(1)}%)`)
                 .join('; ')
             : ''
           // Paid/unpaid mirrors the on-screen badge (blank for stored/non-buyer loads).
@@ -532,9 +537,11 @@ export default function LoadsPage() {
             pay === 'paid' ? { v: 'Paid', tone: 'favorable' as const }
             : pay === 'unpaid' ? { v: 'Unpaid', tone: 'warning' as const }
             : ''
+          // The amber "Unassigned" chip on screen.
+          const saleCell: ExportCell = saleKind(allocsOf(r), r) === 'unassigned' ? { v: saleText(r), tone: 'warning' as const } : saleText(r)
           return [
-            fmtDate(r.date), r.time ? r.time.slice(0, 5) : '', r.ticket_number ?? '', truckExportLabel(r), r.crop?.name ?? '',
-            fromLabel(r, rSplits, fieldNameById), toLabel(r), wholeContractNumber(r), saleText(r), payCell,
+            r.date, r.time ? r.time.slice(0, 5) : '', r.ticket_number ?? '', truckExportLabel(r), r.crop?.name ?? '',
+            fromLabel(r, rSplits, fieldNameById), toLabel(r), wholeContractNumber(r), saleCell, payCell,
             r.gross_weight ?? '', r.tare_weight ?? '', r.net_weight ?? '',
             wetBushels ?? '', dryBushels ?? '', r.moisture ?? '', r.test_weight ?? '',
             isSplit ? 'Yes' : '', splitDetails,

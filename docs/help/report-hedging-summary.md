@@ -1,7 +1,7 @@
 ---
 page_route: /reports/hedging-summary
 title: Hedging Summary
-updated: 2026-09-24
+updated: 2026-11-17
 keywords: hedging, futures, options, positions, realized, unrealized, profit and loss, crop year, commodity, lender, hedging activity, history, audit, export events, rolls
 ---
 ## What this page is for
@@ -18,7 +18,7 @@ The report opens on the current crop year (or the year you last picked); narrow 
 - **Commodity** — narrow to corn, soybeans, wheat, cotton, and so on.
 - **Entity** — positions in an entity's own name count wholly toward it; positions held by your marketing agent or entered without an entity are hedging for the whole operation.
 - **From date / To date** — filter positions by trade date, or close date for closed positions. The activity section uses each event's trade date.
-- **Export Excel / PDF / Print** — the summary and full position detail with your filters named, plus the activity sheet.
+- **Export Excel / PDF / Print** — the summary and full position detail with your filters named, plus the activity sheet. Grain prices show to the quarter cent ($4.5325) and cotton prices in dollars per pound ($0.7265), dates are real dates, and gains and losses are colored as on screen.
 
 ## Hedging activity
 

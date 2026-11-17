@@ -87,16 +87,28 @@ describe('hedging history timeline', () => {
   })
 
   it('the export is one row per event, chronological, with the detail columns', () => {
-    const rows = hedgeEventExportRows([ROLL_OPEN, ROLL_CLOSE, OPENED], { entityName: () => 'Turnrow Farm' })
+    const rows = hedgeEventExportRows([ROLL_OPEN, ROLL_CLOSE, OPENED], { entityName: () => 'Turnrow Farm', positionLabel: (id) => (id === 'dec' ? 'Dec 26 Corn · short 10 @ $4.5325' : '') })
     expect(rows).toHaveLength(3)
     expect(rows.map((r) => r[0])).toEqual(['2026-04-15', '2026-09-03', '2026-09-03'])
     expect(rows[1][1]).toBe('Closed (roll)')
     expect(rows[1][8]).toBe(5.435)
     expect(rows[1][9]).toBe(-33775)
     expect(rows[1][13]).toBe('from StoneX statement 9/03')
-    expect(rows[1][14]).toBe('StoneX 2026-09-03')
-    expect(rows[2][17]).toBe('dec') // linked to the leg it rolled from
+    expect(rows[1][14]).toBe('StoneX 9/3/2026') // the app's date style, never raw ISO
+    expect(rows[2][17]).toBe('Dec 26 Corn · short 10 @ $4.5325') // linked to the leg it rolled from, in words
     expect(rows[0].length).toBe(HEDGE_EVENT_EXPORT_COLUMNS.length)
+    // What a forwarded file must not carry: a record id, a raw timestamp, a lowercase code.
+    const bare = hedgeEventExportRows([ROLL_OPEN, ROLL_CLOSE, OPENED])
+    expect(bare[2][17]).toBe('') // no label to give: blank, never the position's id
+    for (const r of rows) {
+      expect(String(r[15])).toMatch(/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/) // Recorded: a calendar day
+      if (r[5]) expect(String(r[5])).toMatch(/^[A-Z]/) // Side: Short / Long
+    }
+    const col = (label: string) => HEDGE_EVENT_EXPORT_COLUMNS.find((c) => c.label === label)
+    expect(col('Date')?.format).toBe('date')
+    expect(col('Recorded')?.format).toBe('date')
+    expect(col('Entry Price')?.format).toBe('price4')
+    expect(col('Realized Gain/Loss')?.format).toBe('usd2')
   })
 
   it('source labels read plainly', () => {

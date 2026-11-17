@@ -62,7 +62,7 @@ import {
   summarizeMoistureTerms,
   type ScheduleRuleShape,
 } from '@/lib/discount-schedules'
-import { formatNumber, type ExportPayload } from '@/lib/exports'
+import { formatNumber, type ExportCell, type ExportPayload } from '@/lib/exports'
 import { fetchAllRows } from '@/lib/fetch-all-rows'
 import DiscountScheduleImport from '@/components/discount-schedule-import'
 import { EmptyState, fmtNum, numCell, textCell, theadCls, ReportHeader, filterSummaryOf } from '@/components/reports/report-kit'
@@ -430,6 +430,10 @@ export default function DryerMathReport({
     const dryerLabel = pickedOrgDryer?.name
       ?? (pickedModel ? `${pickedModel.manufacturer} ${pickedModel.model}` : 'Standard consumption')
     const comparing = buyerRules.length > 0
+    // A sheet whose moisture discount already includes the shrink has one
+    // figure on the buyer's side, not a charge plus an excess shrink.
+    const bundledSheet = comparing && buyerTerms.bundled
+    const buyerBlank: ExportCell[] = bundledSheet ? [null] : [null, null]
     const filters = [
       crop?.name ?? 'No crop',
       `base ${fmtNum(baseMoisture, 1)}%`,
@@ -451,32 +455,57 @@ export default function DryerMathReport({
         { label: 'Weight lost per point (not a cost)', value: SHRINK_PCT_PER_POINT.toFixed(3) + '%' },
       ] : undefined,
       sections: [{
-        title: 'Total drying cost by incoming moisture — fuel + fan electricity + depreciation; rows below base are the cost of overdrying',
+        // Short: this is the sheet tab. What the cost is made of is in the
+        // cards above and the line under the table.
+        title: 'Drying cost by moisture',
         columns: [
-          { label: 'Moisture %', align: 'right', format: 'dec1' },
-          { label: 'Total drying cost ¢/bu', align: 'right', format: 'dec1' },
+          { label: 'Moisture (%)', align: 'right', format: 'dec1' },
+          { label: 'Total drying cost (¢/bu)', align: 'right', format: 'dec1' },
+          // The buyer's side as numbers — the screen's "17.5¢ charge + 4.6¢
+          // excess shrink" line under the haul-it-wet figure.
           ...(comparing ? [
-            { label: 'Haul it wet ¢/bu', align: 'right' as const, format: 'dec1' as const },
-            { label: 'Their sheet', align: 'left' as const },
+            { label: 'Haul it wet (¢/bu)', align: 'right' as const, format: 'dec1' as const },
+            ...(bundledSheet
+              ? [{ label: 'Their bundled moisture discount (¢/bu)', align: 'right' as const, format: 'dec1' as const }]
+              : [
+                  { label: 'Their drying charge (¢/bu)', align: 'right' as const, format: 'dec1' as const },
+                  { label: 'Their excess shrink (¢/bu)', align: 'right' as const, format: 'dec1' as const },
+                ]),
             { label: 'Cheaper', align: 'left' as const },
+            { label: 'You save (¢/bu)', align: 'right' as const, format: 'dec1' as const },
           ] : []),
+          { label: 'Note', align: 'left' },
         ],
-        rows: rows.map((r) => {
-          if (r.kind === 'base') return [r.m, null, ...(comparing ? [null, '', 'Base — stop here'] : [])]
+        rows: rows.map((r): ExportCell[] => {
+          // Base and overdried rows have nothing on the buyer's side.
+          const noCompare: ExportCell[] = comparing ? [null, ...buyerBlank, null, null] : []
+          if (r.kind === 'base') return [{ v: r.m, tone: 'favorable' }, null, ...noCompare, 'Base moisture — stop here']
           if (r.kind === 'over') {
             return r.over
-              ? [r.m, { v: r.over.totalPerBu * 100, tone: 'unfavorable' as const }, ...(comparing ? [null, '', 'Overdried — cost of going past base'] : [])]
-              : [r.m, null, ...(comparing ? [null, '', 'Overdried — enter a grain price'] : [])]
+              ? [{ v: r.m, tone: 'unfavorable' }, { v: r.over.totalPerBu * 100, tone: 'unfavorable' }, ...noCompare, 'Overdried — the cost of going past base']
+              : [{ v: r.m, tone: 'unfavorable' }, null, ...noCompare, { v: 'Overdried — needs a grain price', tone: 'warning' }]
           }
+          const v = r.verdict
+          const saved = v?.buyerCents != null && (v.cheaper === 'dry' || v.cheaper === 'haul_wet') ? Math.abs(v.buyerCents - v.dryCents) : null
           return [
             r.m, r.cost.totalPerBu * 100,
             ...(comparing ? [
-              r.verdict?.buyerCents ?? null,
-              r.verdict ? buyerSideText(r.verdict) : '',
-              r.verdict?.cheaper === 'dry' ? 'Dry it' : r.verdict?.cheaper === 'haul_wet' ? 'Haul it wet' : r.verdict?.cheaper === 'even' ? 'Even' : r.verdict?.reason === 'needs_price' ? 'Needs a grain price' : '',
+              v?.buyerCents != null ? (v.cheaper === 'haul_wet' ? { v: v.buyerCents, tone: 'favorable' as const } : v.buyerCents) : null,
+              ...(bundledSheet ? [v?.buyer?.chargeCents ?? null] : [v?.buyer?.chargeCents ?? null, v?.buyer?.excessShrinkCents ?? null]),
+              v?.cheaper === 'dry' ? { v: 'Dry it', tone: 'favorable' as const }
+                : v?.cheaper === 'haul_wet' ? 'Haul it wet'
+                : v?.cheaper === 'even' ? 'About even'
+                : v?.reason === 'needs_price' ? { v: 'Needs a grain price', tone: 'warning' as const }
+                : '',
+              saved,
             ] : []),
+            '',
           ]
         }),
+        postlude: [{
+          kind: 'text',
+          cells: ['Total drying cost is fuel + fan electricity + dryer depreciation. Rows below base moisture are the cost of overdrying.'],
+        }],
       }],
     }
   }

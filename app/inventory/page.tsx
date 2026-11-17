@@ -284,8 +284,14 @@ export default async function InventoryPage({
   // beginning inventory is still active; otherwise it's a single total.
   // Transfer net is its own column so load-backed stays honest, and each row
   // carries its bin's capacity/% full when a capacity is set.
+  // Rows follow the page: each visible bin site in its on-screen order, then the
+  // bins with no site (shown on screen whenever no site / entity filter is on).
   const csvRows: InventoryCsvRow[] = []
-  for (const list of binsBySite.values()) {
+  const exportGroups: Array<{ siteName: string; list: BinView[] }> = [
+    ...visibleSites.map((s) => ({ siteName: s.name, list: binsBySite.get(s.id) ?? [] })),
+    { siteName: '', list: unsited },
+  ]
+  for (const { siteName, list } of exportGroups) {
     for (const v of list) {
       const adjs = adjustmentsForBin.get(v.bin.id) ?? []
       const pct = percentFull(v.physicalTotal, v.bin.capacity_bushels)
@@ -301,6 +307,7 @@ export default async function InventoryPage({
               .join('; ')
           : ''
         csvRows.push({
+          siteName,
           binName: v.bin.name_or_number,
           cropName: cropName(r.cid),
           loadBackedBu,
@@ -308,12 +315,20 @@ export default async function InventoryPage({
           beginningBu,
           totalBu: r.total,
           capacityBu: v.bin.capacity_bushels,
-          pctFull: pct != null ? percentFullLabel(pct) : '',
+          pctFull: pct,
           beginningNotes,
         })
       }
     }
   }
+
+  // The filters in effect, in words, for whoever the file is forwarded to.
+  const exportFilters = [
+    entityId ? entityNameById.get(entityId) ?? 'One entity' : 'All Entities',
+    siteFilter ? sites.find((s) => s.id === siteFilter)?.name ?? 'One bin site' : 'All Bin Sites',
+    cropFilter ? cropName(cropFilter) : 'All Crops',
+    'What is in the bins today, every crop year',
+  ].join(' · ')
 
   return (
     <div className="space-y-4">
@@ -322,7 +337,7 @@ export default async function InventoryPage({
         {allBins.length > 1 && (
           <TransferGrainButton bins={transferBins} crops={transferCrops} onHand={onHandRecord} prominent />
         )}
-        <ExportInventoryCsv rows={csvRows} />
+        <ExportInventoryCsv rows={csvRows} filters={exportFilters} />
       </div>
       <InventoryFilters
         entityId={entityId}

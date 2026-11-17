@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { aggregateMarketing, computeMarketing, isCottonCrop, DEFAULT_BALE_LBS, type Planting } from '@/lib/marketing'
 import { buildMarketingExport } from '@/lib/marketing-export'
 import { computeRevenueProjections, type InsuranceProceeds, type GovtProceeds } from '@/lib/revenue-projections'
-import { formatNumber, excelNumFmt } from '@/lib/exports'
+import { formatNumber, excelNumFmt, type ExportCell } from '@/lib/exports'
 import { optionPremiumTotal, parsePrice, COMMODITY_SPECS } from '@/lib/hedging'
 import type { Crop, CropAssumption, FuturesPosition } from '@/lib/types'
 
@@ -224,21 +224,29 @@ describe('unit-aware export formats', () => {
       segByCrop: new Map(),
       combined: { acres: 1600, profit: null },
     })
+    // Each line as a reader sees it: Item | Quantity | Unit | Price / amount.
+    // The figures are real numbers carrying their own format (lbs / cents for
+    // cotton, bu / price for grain) — shown here through the shared formatter.
+    const shown = (c: ExportCell): string =>
+      c != null && typeof c === 'object'
+        ? (typeof c.v === 'number' ? formatNumber(c.v, c.format) : String(c.v ?? ''))
+        : String(c ?? '')
     const flat = (title: string) =>
-      payload.sections.find((s) => s.title === title)!.rows.map((r) => r.join(' | ')).join('\n')
+      payload.sections.find((s) => s.title === title)!.rows.map((r) => r.map(shown).join(' | ')).join('\n')
 
     const cotton = flat('Cotton')
-    expect(cotton).toContain('600,000 lbs')
-    expect(cotton).toContain('500,000 lbs @ $0.7265')
+    expect(cotton).toContain('Total production | 600,000 | lbs lint')
+    expect(cotton).toContain('Hedged (open futures) | 500,000 | lbs | $0.7265')
     expect(cotton).toContain('lbs lint/ac')
-    expect(cotton).toContain('Physical cotton marketing not yet tracked')
-    expect(cotton).not.toMatch(/\$\d+\.\d{2}\/bu/)
+    expect(cotton).toContain('No physical cotton marketing entered yet')
+    expect(cotton).not.toMatch(/\| bu(\/ac)? \|/)
 
     const cornSec = flat('Corn')
-    expect(cornSec).toContain('180,000 bu')
+    expect(cornSec).toContain('Total production | 180,000 | bu')
     expect(cornSec).toContain('bu/ac')
     expect(cornSec).toContain('$4.50')
     expect(cornSec).not.toContain('¢')
+    expect(cornSec).not.toContain('lbs')
   })
 })
 

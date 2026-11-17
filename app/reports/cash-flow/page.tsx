@@ -25,7 +25,7 @@ import { resolveCropAssumptions } from '@/lib/viewer-assumptions'
 import { SupersededNotice } from '@/components/viewer-scenario'
 import EntityFilter from '@/components/entity-filter'
 import ExportBar from '@/components/export-bar'
-import { formatNumber, type ExportPayload } from '@/lib/exports'
+import type { ExportPayload, ExportCell } from '@/lib/exports'
 import {
   SummaryCards, EmptyState, ReportHeader, ReportFilterBar, FilterField, MonthlyBars, type SummaryCardData,
   numCell, textCell, theadCls, stickyColCls, stickyColHeadCls, selectCls,
@@ -967,12 +967,18 @@ export default function CashFlowPage() {
 
   // Export mirrors the on-screen monthly forecast + contract detail tables.
   function buildPayload(): ExportPayload {
-    const filters = [
-      cropYear === '' ? 'All crop years' : `${cropYear} crop`,
-      cropId ? cropById.get(cropId)?.name ?? 'Crop' : 'All crops',
-      buyerId ? buyerById.get(buyerId)?.name ?? 'Buyer' : 'All buyers',
-      entityName ?? 'All entities',
-    ].join(' · ')
+    // The colors the screen gives each column: collected green, owed amber,
+    // a net figure green or red by its sign.
+    const received = (v: number): ExportCell => ({ v, tone: 'favorable' })
+    const owed = (v: number): ExportCell => ({ v, tone: 'warning' })
+    const net = (v: number): ExportCell => ({ v, tone: signedTone(v) })
+    const statusLabel = (s: 'received' | 'projected') => (s === 'received' ? 'Received' : 'Projected')
+    // The marks the screen puts beside a contract number.
+    const tagged = (name: string, tags: Array<string | null>) => {
+      const on = tags.filter(Boolean)
+      return on.length > 0 ? `${name} (${on.join(', ')})` : name
+    }
+    const shareTag = (s: number) => (s < 1 ? `${Math.round(s * 100)}% share` : null)
 
     const monthly: ExportPayload['sections'][number] = {
       title: 'Monthly Forecast',
@@ -980,21 +986,32 @@ export default function CashFlowPage() {
         { label: 'Month' },
         { label: 'Received', align: 'right', format: 'usd0' }, { label: 'Outstanding', align: 'right', format: 'usd0' },
         { label: 'Projected', align: 'right', format: 'usd0' }, { label: 'ARC/PLC', align: 'right', format: 'usd0' },
-        { label: 'Crop Insurance', align: 'right', format: 'usd0' }, { label: 'Other Govt', align: 'right', format: 'usd0' },
+        { label: 'Crop Insurance', align: 'right', format: 'usd0' }, { label: 'Other USDA', align: 'right', format: 'usd0' },
         { label: 'Cotton (net)', align: 'right', format: 'usd0' }, { label: 'Seed (net)', align: 'right', format: 'usd0' },
         { label: 'Month total', align: 'right', format: 'usd0' }, { label: 'Cumulative', align: 'right', format: 'usd0' },
       ],
-      rows: monthlyRows.map((r) => [r.label, r.received, r.outstanding, r.projected, r.arcPlc, r.insurance, r.other, r.cotton, r.seed, r.total, r.cumulative]),
+      // A month with no cotton or seed cash is blank, as it is on screen.
+      rows: monthlyRows.map((r): ExportCell[] => [
+        r.label, received(r.received), owed(r.outstanding), r.projected, r.arcPlc, r.insurance, r.other,
+        r.cotton === 0 ? '' : net(r.cotton), r.seed === 0 ? '' : net(r.seed), r.total, r.cumulative,
+      ]),
+      // The line the screen prints under this table.
+      postlude: priceLater
+        ? [
+            { kind: 'text', cells: [`Price later: ${priceLater.text}.`] },
+            { kind: 'text', cells: ['These bushels are not in any month above until they are priced.'] },
+          ]
+        : undefined,
     }
 
     const cottonDetail: ExportPayload['sections'][number] | null = visibleCottonEvents.length > 0
       ? {
           title: 'Cotton Cash Detail',
           columns: [
-            { label: 'Date' }, { label: 'Item' },
+            { label: 'Date', format: 'date' }, { label: 'Item' },
             { label: 'Amount', align: 'right', format: 'usd0' }, { label: 'Status' },
           ],
-          rows: visibleCottonEvents.map((e) => [e.date, e.label, e.amount, e.status]),
+          rows: visibleCottonEvents.map((e): ExportCell[] => [e.date, e.label, net(e.amount), statusLabel(e.status)]),
         }
       : null
 
@@ -1005,21 +1022,23 @@ export default function CashFlowPage() {
             { label: 'Month' }, { label: 'Item' },
             { label: 'Amount', align: 'right', format: 'usd0' }, { label: 'Status' },
           ],
-          rows: visibleSeedEvents.map((e) => [monthLabel(e.month), e.label, e.amount, e.status]),
+          rows: visibleSeedEvents.map((e): ExportCell[] => [monthLabel(e.month), e.label, net(e.amount), statusLabel(e.status)]),
         }
       : null
 
     const detail: ExportPayload['sections'][number] = {
       title: 'Contract Detail',
       columns: [
-        { label: 'Contract #' }, { label: 'Buyer' }, { label: 'Crop' }, { label: 'Year', format: 'text' }, { label: 'Window' },
-        { label: 'Price/bu', align: 'right', format: 'price' }, { label: 'Contracted', align: 'right', format: 'bu' },
-        { label: 'Delivered', align: 'right', format: 'bu' }, { label: 'Remaining', align: 'right', format: 'bu' },
+        { label: 'Contract #' }, { label: 'Buyer' }, { label: 'Crop' }, { label: 'Year', format: 'text' },
+        // The screen's one "Window" column, as two real dates.
+        { label: 'Delivery Start', format: 'date' }, { label: 'Delivery End', format: 'date' },
+        { label: 'Price/bu', align: 'right', format: 'price' }, { label: 'Contracted (bu)', align: 'right', format: 'bu' },
+        { label: 'Delivered (bu)', align: 'right', format: 'bu' }, { label: 'Remaining (bu)', align: 'right', format: 'bu' },
         { label: 'Value', align: 'right', format: 'usd0' }, { label: 'Received', align: 'right', format: 'usd0' },
         { label: 'Outstanding', align: 'right', format: 'usd0' }, { label: 'Projected', align: 'right', format: 'usd0' },
       ],
       rows: [
-        ...visibleContracts.map((c) => {
+        ...visibleContracts.map((c): ExportCell[] => {
           const agg = aggFor(c)
           const price = Number(c.price_per_bushel ?? 0)
           const s = shareFor(c)
@@ -1027,23 +1046,25 @@ export default function CashFlowPage() {
           const delivered = agg.delivered * s
           const remainingBu = Math.max(0, Number(c.contracted_bushels) - agg.delivered) * s
           const complete = isContractComplete(c.completed_at, Number(c.contracted_bushels), agg.delivered)
-          const window = (c.delivery_start_date || c.delivery_end_date) ? `${c.delivery_start_date ?? '?'} → ${c.delivery_end_date ?? '?'}` : '—'
           return [
-            complete ? `${c.contract_number} (complete)` : c.contract_number ?? '',
-            buyerById.get(c.buyer_id ?? '')?.name ?? '', cropById.get(c.crop_id ?? '')?.name ?? '', c.crop_year ?? '', window,
+            tagged(c.contract_number ?? '', [complete ? 'complete' : null, shareTag(s)]),
+            buyerById.get(c.buyer_id ?? '')?.name ?? '', cropById.get(c.crop_id ?? '')?.name ?? '', c.crop_year ?? '',
+            c.delivery_start_date ?? '', c.delivery_end_date ?? '',
             price || '', contractedBu, delivered, remainingBu,
-            contractedBu * price, agg.revenueReceived * s, agg.deliveredUnpaid * price * s, complete ? 0 : remainingBu * price,
+            contractedBu * price, received(agg.revenueReceived * s), owed(agg.deliveredUnpaid * price * s), complete ? 0 : remainingBu * price,
           ]
         }),
-        ...visibleSpots.map((sp) => {
+        // The Spot row: no window, nothing left to deliver and nothing
+        // projected — blank, where the screen shows a dash.
+        ...visibleSpots.map((sp): ExportCell[] => {
           const s = spotShare(sp)
           const st = contractFlow.spotStats.get(sp.id)
           return [
-            `Spot${sp.estimated ? ' (est.)' : ''}`,
+            tagged('Spot', [sp.estimated ? 'est.' : null, shareTag(s)]),
             sp.buyers.map((b) => buyerById.get(b.buyerId ?? '')?.name ?? '').filter(Boolean).join(', '),
-            cropById.get(sp.crop_id)?.name ?? '', sp.crop_year, '—',
-            sp.avgPrice ?? '', sp.bushels * s, sp.bushels * s, 0,
-            sp.revenue * s, st?.received ?? 0, st?.outstanding ?? 0, 0,
+            cropById.get(sp.crop_id)?.name ?? '', sp.crop_year, '', '',
+            sp.avgPrice ?? '', sp.bushels * s, sp.bushels * s, '',
+            sp.revenue * s, received(st?.received ?? 0), owed(st?.outstanding ?? 0), '',
           ]
         }),
       ],
@@ -1051,14 +1072,10 @@ export default function CashFlowPage() {
 
     return {
       title: 'Cash Flow Forecast',
-      filters,
-      summary: [
-        { label: 'Contract value', value: formatNumber(summary.value, 'usd0') },
-        { label: 'Received', value: formatNumber(summary.received, 'usd0'), tone: 'favorable' },
-        { label: 'Outstanding', value: formatNumber(summary.outstanding, 'usd0'), tone: 'warning' },
-        { label: 'Projected', value: formatNumber(summary.remaining, 'usd0') },
-        { label: 'Total Safety Net', value: formatNumber(safetyTotals.total, 'usd0'), tone: 'favorable' },
-      ],
+      // The same line the report header shows.
+      filters: filterSummary,
+      // The same cards as the screen: the contract cards, then the safety net.
+      summary: [...summaryCards, ...safetyCards].map((c) => ({ label: c.label, value: c.value, sub: c.sub, tone: c.tone })),
       sections: [monthly, ...(cottonDetail ? [cottonDetail] : []), ...(seedDetail ? [seedDetail] : []), detail],
     }
   }

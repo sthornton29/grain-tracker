@@ -266,15 +266,15 @@ describe('formula seam — keyed sections render bounded formulas with cached re
     ],
   })
 
-  it('the layout places plain headers on row 1 (row 2 under a note) and sizes ranges to the rows', () => {
+  it('the layout places a plain header on row 1 (row 3 under a note and its thin spacer) and sizes ranges to the rows', () => {
     const p = payload()
     expect(payloadHasFormulas(p)).toBe(true)
     const layout = formulaLayout(p)
     expect(layout.totals).toMatchObject({ sheetName: 'Totals', firstRow: 2, rowCount: 2, columns: { name: 'A', bu: 'B', yield: 'C', acres: 'D' } })
-    expect(layout.loads).toMatchObject({ sheetName: 'Load Data', firstRow: 3, rowCount: 3 })
-    expect(formulaTextOf(p, 'totals', 0, 'bu')).toBe("SUMIFS('Load Data'!$C$3:$C$5,'Load Data'!$A$3:$A$5,A2)")
+    expect(layout.loads).toMatchObject({ sheetName: 'Load Data', firstRow: 4, rowCount: 3 })
+    expect(formulaTextOf(p, 'totals', 0, 'bu')).toBe("SUMIFS('Load Data'!$C$4:$C$6,'Load Data'!$A$4:$A$6,A2)")
     expect(formulaTextOf(p, 'totals', 1, 'yield')).toBe('IFERROR(B3/D3,0)')
-    expect(formulaTextOf(p, 'loads', 2, 'dry')).toBe('B5/56')
+    expect(formulaTextOf(p, 'loads', 2, 'dry')).toBe('B6/56')
     expect(formulaTextOf(p, 'totals', 0, 'name')).toBeNull()
   })
 
@@ -294,7 +294,7 @@ describe('formula seam — keyed sections render bounded formulas with cached re
     const wb = await buildExcelWorkbook(p)
     expect(wb.calcProperties.fullCalcOnLoad).toBe(true)
     const totals = wb.getWorksheet('Totals')
-    expect(totals.getCell('B2').value).toEqual({ formula: "SUMIFS('Load Data'!$C$3:$C$5,'Load Data'!$A$3:$A$5,A2)", result: 1500 })
+    expect(totals.getCell('B2').value).toEqual({ formula: "SUMIFS('Load Data'!$C$4:$C$6,'Load Data'!$A$4:$A$6,A2)", result: 1500 })
     expect(totals.getCell('B2').numFmt).toBe('#,##0.000;(#,##0.000)')
     expect(totals.getCell('D2').font?.color?.argb).toBe('FF0000FF')
     expect(totals.getCell('B2').font?.color?.argb).toBeUndefined()
@@ -302,8 +302,10 @@ describe('formula seam — keyed sections render bounded formulas with cached re
     expect(totals.views[0]).toMatchObject({ state: 'frozen', ySplit: 1 })
     const loads = wb.getWorksheet('Load Data')
     expect(loads.getCell('A1').value).toBe('One row per load.')
-    expect(loads.getCell('A2').value).toBe('Field')
-    expect(loads.getCell('C3').value).toEqual({ formula: 'B3/56', result: 1000 })
+    expect(loads.getRow(2).height).toBe(6) // the thin spacer between the note and the header
+    expect(loads.getCell('A3').value).toBe('Field')
+    expect(loads.getCell('C4').value).toEqual({ formula: 'B4/56', result: 1000 })
+    expect(loads.views[0]).toMatchObject({ state: 'frozen', ySplit: 3, activeCell: 'A4' })
   })
 
   it('a titled (non-plain) section still lines the layout up with the written header row', async () => {

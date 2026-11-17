@@ -380,7 +380,8 @@ export default function YieldsByLandowner({ onPayloadChange, headerActions, cont
     )
   }
 
-  // Export payload mirrors the on-screen layout: one section per landowner,
+  // Export payload mirrors the on-screen layout: one section per landowner
+  // (its own sheet in Excel, named for the landowner — a handout per tab),
   // with a sub-header row per farm followed by its crop rows, then a tinted
   // totals block. Per-field detail is intentionally omitted — the report rolls
   // up to the farm level for readability.
@@ -400,10 +401,10 @@ export default function YieldsByLandowner({ onPayloadChange, headerActions, cont
           { label: 'Dry bu', align: 'right', format: 'bu' },
           { label: 'Yield (bu/ac)', align: 'right', format: 'yield' },
         ]
-    const cells = (cropId: string, cropName: string, acres: number, prod: number): Array<string | number | null> =>
-      anyCotton ? [cropName, acres, prod, unitOf(cropId), yld(acres, prod)] : [cropName, acres, prod, yld(acres, prod)]
-    // Real number (formatted to 1 dec by the column), or '—' when there are no acres.
-    const yld = (acres: number, dryBu: number): number | string => (acres > 0 ? dryBu / acres : '—')
+    const cells = (cropId: string, label: string, acres: number, prod: number): Array<string | number | null> =>
+      anyCotton ? [label, acres, prod, unitOf(cropId), yld(acres, prod)] : [label, acres, prod, yld(acres, prod)]
+    // Real number (formatted to 1 dec by the column); blank when there are no acres.
+    const yld = (acres: number, dryBu: number): number | string => (acres > 0 ? dryBu / acres : '')
 
     const sections: ExportSection[] = shownGroups.map((g) => {
       const rows: Array<Array<string | number | null>> = []
@@ -422,14 +423,15 @@ export default function YieldsByLandowner({ onPayloadChange, headerActions, cont
         rows.push([`${g.landownerName} totals`])
         rowMeta.push('subhead')
         for (const [cropId2, t] of g.byCrop) {
-          rows.push(cells(cropId2, t.cropName, t.acres, t.dryBu))
+          // Each total row says what it totals ("Corn total").
+          rows.push(cells(cropId2, `${t.cropName} total`, t.acres, t.dryBu))
           rowMeta.push('total')
         }
       }
 
-      const farmCount = `${g.farms.length} farm${g.farms.length === 1 ? '' : 's'}`
+      // The landowner's own name is the sheet tab (31 characters in Excel).
       return {
-        title: `${g.landownerName}  —  ${farmCount}`,
+        title: g.landownerName,
         columns,
         rows,
         rowMeta,
@@ -443,8 +445,9 @@ export default function YieldsByLandowner({ onPayloadChange, headerActions, cont
       const f = g?.farms.find((x) => x.farmName === openDetail.farmName)
       const t = f?.byCrop.get(openDetail.cropId)
       if (g && f && t) {
-        const yearLabel = cropYear === '' ? 'all crop years' : String(cropYear)
-        const title = `Load Detail — ${g.landownerName} · ${f.farmName} · ${t.cropName} · ${yearLabel}`
+        // The farm leads so the Excel tab still names it; the crop year is on
+        // the filter line of every sheet.
+        const title = `${f.farmName} · ${t.cropName} ${isCottonCrop(t.cropName) ? 'detail' : 'loads'}`
         if (isCottonCrop(t.cropName)) {
           if (cottonDetail.data) {
             const details = cottonDetailsByYear(t.plantings, cottonDetail.data)
@@ -460,7 +463,6 @@ export default function YieldsByLandowner({ onPayloadChange, headerActions, cont
     return {
       title: 'Yields by Landowner',
       filters: filtersLabel(),
-      singleSheet: true,
       sections,
     }
   }

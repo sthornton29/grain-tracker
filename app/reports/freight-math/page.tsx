@@ -33,7 +33,7 @@ import ExportBar from '@/components/export-bar'
 import { EmptyState, fmtNum, fmtUsd, numCell, textCell, theadCls, ReportHeader, filterSummaryOf } from '@/components/reports/report-kit'
 import { AppModal } from '@/components/app-dialog'
 import { reportError } from '@/lib/friendly-error'
-import type { ExportPayload } from '@/lib/exports'
+import type { ExportCell, ExportPayload } from '@/lib/exports'
 import type { Crop } from '@/lib/types'
 
 type BinSiteRow = { id: string; name: string; address: string | null; latitude: number | string | null; longitude: number | string | null }
@@ -390,31 +390,53 @@ export default function FreightMathPage() {
     })
     // Cost by destination — the saved ones (a location without miles has
     // nothing to print). Wait shows the hours each row was costed at.
-    const destRows = destinationTable.flatMap((g) =>
+    // A wait that is only the default reads muted, as it does on screen.
+    const destRows: ExportCell[][] = destinationTable.flatMap((g) =>
       g.rows.filter((r) => r.cost != null).map((r) => [
-        g.buyerName, r.locationName, r.miles, r.waitHours,
+        g.buyerName, r.locationName, r.miles, r.waitIsOverride ? r.waitHours : { v: r.waitHours, tone: 'muted' as const },
         r.cost!.fuel, r.cost!.labor, r.cost!.wear, r.cost!.totalPerLoad, r.cost!.centsPerBu,
       ]),
     )
     const binSiteName = binSites.find((b) => b.id === binSiteId)?.name
+    const ownershipOn = settings.includeOwnership && (settings.ownershipPerMile ?? 0) > 0
     return {
       title: 'Freight Math',
+      // The screen's line (crop · destination), then every input the numbers
+      // below were figured with — a reader has no input boxes to look at.
       filters: [
         crop?.name ?? '',
-        payloadBu != null ? `${fmtNum(payloadBu, 0)} bu/load` : 'no payload',
+        destination?.name ? `To ${destination.name}` : '',
+        destRows.length > 0 && binSiteName ? `hauling from ${binSiteName}` : '',
+        miles != null && miles > 0 ? `${fmtNum(miles, 0)} miles one way` : '',
+        payloadBu != null ? `${fmtNum(payloadBu, 0)} bu/load` : 'no bushel payload — per-load cost only',
         diesel != null ? `diesel $${fmtNum(diesel)}/gal` : '',
         labor != null ? `labor $${fmtNum(labor)}/hr` : '',
         `${fmtNum(settings.truckMpg, 1)} mpg · ${fmtNum(settings.avgSpeedMph, 0)} mph · ${fmtNum(settings.loadUnloadHours, 2)} hr load/unload + wait (default) · wear $${fmtNum(settings.wearPerMile)}/mi`,
+        ownershipOn ? `ownership $${fmtNum(settings.ownershipPerMile ?? 0)}/mi included in the per-load cost` : '',
         cost?.waitIsOverride ? `${fmtNum(cost.loadUnloadHours, 2)} hr at ${destination?.name ?? 'this destination'}` : '',
       ].filter(Boolean).join(' · '),
       summary: cost ? [
-        { label: 'Cost per load', value: fmtUsd(cost.totalPerLoad, 2) },
-        { label: 'Cost per bushel', value: cost.centsPerBu != null ? `${fmtNum(cost.centsPerBu, 1)}¢` : '—' },
-        { label: 'Delivered must pay at least', value: cost.breakevenCentsPerBu != null ? `+${fmtNum(cost.breakevenCentsPerBu, 1)}¢/bu` : '—' },
+        {
+          label: 'Cost per load', value: fmtUsd(cost.totalPerLoad, 2),
+          sub: `${fmtNum(cost.roundTripMiles, 0)} mi round trip · fuel ${fmtUsd(cost.fuel, 2)} · labor ${fmtUsd(cost.labor, 2)} · wear ${fmtUsd(cost.wear, 2)}${cost.ownership > 0 ? ` · ownership ${fmtUsd(cost.ownership, 2)}` : ''}`,
+        },
+        {
+          label: 'Cost per bushel', value: cost.centsPerBu != null ? `${fmtNum(cost.centsPerBu, 1)}¢` : '—',
+          sub: crop && payloadBu != null ? `${fmtNum(payloadBu, 0)} bu ${crop.name} per load` : undefined,
+        },
+        {
+          label: 'Delivered must pay at least', value: cost.breakevenCentsPerBu != null ? `+${fmtNum(cost.breakevenCentsPerBu, 1)}¢/bu` : '—',
+          sub: `more than a picked-up contract, to cover hauling ${fmtNum(miles ?? 0, 0)} miles`,
+        },
+        ...(cost.customRatePerLoadedMile != null ? [{
+          label: 'Custom-rate equivalent', value: `${fmtUsd(cost.customRatePerLoadedMile, 2)}/loaded mile`,
+          sub: 'to check against hired-hauler quotes',
+        }] : []),
       ] : undefined,
       sections: [
         ...(destRows.length > 0 ? [{
-          title: `Cost by destination${binSiteName ? ` — from ${binSiteName}` : ''}`,
+          // Short: this is the sheet tab. Where the haul starts is in the context line.
+          title: 'Cost by destination',
           columns: [
             { label: 'Buyer', align: 'left' as const },
             { label: 'Destination', align: 'left' as const },
@@ -442,7 +464,7 @@ export default function FreightMathPage() {
         },
       ],
     }
-  }, [cost, crop?.name, payloadBu, diesel, labor, settings, destinationTable, binSites, binSiteId, destination?.name])
+  }, [cost, crop, payloadBu, diesel, labor, miles, settings, destinationTable, binSites, binSiteId, destination?.name])
 
   if (loading) return <p className="text-sm text-slate-400">Loading…</p>
   if (crops.length === 0) {

@@ -156,9 +156,9 @@ export default async function SpotContractPage({
         ],
       })
       exportRows.push([
-        fmtDate(row.load.date), g.name, `${row.load.ticket_number ?? ''}${splitNote ? ` (${splitNote})` : ''}`,
+        row.load.date, g.name, `${row.load.ticket_number ?? ''}${splitNote ? ` (${splitNote})` : ''}`,
         row.alloc.bushels, price ?? '', chip,
-        s?.est_futures_price ?? '', s?.est_basis ?? '', settlementId ? 'yes' : '',
+        s?.est_futures_price ?? '', s?.est_basis ?? '', settlementId ? 'Yes' : { v: 'Not yet', tone: 'muted' },
       ])
       exportMeta.push('data')
     }
@@ -173,7 +173,9 @@ export default async function SpotContractPage({
         sub.futures ? fmtUsd(sub.futures.avgFutures, 2) : '', sub.futures ? fmtBasis(sub.futures.avgBasis) : '', '',
       ],
     })
-    exportRows.push([subLabel, '', '', g.buyer.bushels, g.buyer.avgPrice ?? '', sub.statusText, sub.futures?.avgFutures ?? '', sub.futures?.avgBasis ?? '', ''])
+    // The screen's subtotal label repeats the bushels and the average in words;
+    // here they are the numbers in their own columns.
+    exportRows.push([`${g.name} total`, '', '', g.buyer.bushels, g.buyer.avgPrice != null ? { v: g.buyer.avgPrice, format: 'price4' } : '', sub.statusText, sub.futures?.avgFutures ?? '', sub.futures?.avgBasis ?? '', ''])
     exportMeta.push('subtotal')
   }
   tableRows.push({
@@ -185,24 +187,25 @@ export default async function SpotContractPage({
       spot.summary.futures ? fmtUsd(spot.summary.futures.avgFutures, 2) : '', spot.summary.futures ? fmtBasis(spot.summary.futures.avgBasis) : '', '',
     ],
   })
-  exportRows.push(['Total', '', `${facts.loadCount} loads`, spot.bushels, spot.avgPrice ?? '', facts.statusText, spot.summary.futures?.avgFutures ?? '', spot.summary.futures?.avgBasis ?? '', ''])
+  exportRows.push(['Total', '', `${facts.loadCount} load${facts.loadCount === 1 ? '' : 's'}`, spot.bushels, spot.avgPrice != null ? { v: spot.avgPrice, format: 'price4' } : '', facts.statusText, spot.summary.futures?.avgFutures ?? '', spot.summary.futures?.avgBasis ?? '', ''])
   exportMeta.push('total')
 
   const exportPayload: ExportPayload = {
     title,
     filters: filterSummary,
+    // The same four cards as the screen, with their second lines.
     summary: [
-      { label: 'Bushels', value: `${fmtInt(spot.bushels)} bu` },
-      { label: 'Average price', value: `${facts.avgText}${facts.estimated ? ' (est.)' : ''}` },
-      { label: 'Revenue', value: fmtUsd(facts.value) },
-      { label: 'Settled', value: `${spot.summary.settledCount} of ${facts.loadCount}` },
+      { label: 'Spot bushels', value: `${fmtInt(spot.bushels)} bu`, sub: `${facts.loadCount} load${facts.loadCount === 1 ? '' : 's'} · ${facts.buyersLabel || 'no buyer'}` },
+      { label: 'Average price', value: facts.avgText, sub: facts.estimated ? 'est. — some loads are not settled yet' : 'bushel-weighted', tone: facts.estimated ? 'warning' : 'neutral' },
+      { label: 'Revenue', value: fmtUsd(facts.value), sub: facts.unpaidBu > 0 ? `${fmtUsd(facts.paidRevenue)} settled · ${fmtUsd(facts.unpaidRevenue)} still to settle` : 'all settled', tone: 'favorable' },
+      { label: 'Settled', value: `${spot.summary.settledCount} of ${facts.loadCount}`, sub: facts.statusText, tone: spot.summary.settledCount === facts.loadCount ? 'favorable' : 'warning' },
     ],
     sections: [{
       title: 'Spot loads',
       columns: [
-        { label: 'Date' }, { label: 'Buyer' }, { label: 'Ticket' },
-        { label: 'Bushels', align: 'right', format: 'bu' }, { label: '$/bu', align: 'right', format: 'price' }, { label: 'Price from' },
-        { label: 'Futures', align: 'right', format: 'price' }, { label: 'Basis', align: 'right', format: 'dec2' }, { label: 'Settled' },
+        { label: 'Date', format: 'date' }, { label: 'Buyer' }, { label: 'Ticket' },
+        { label: 'Bushels', align: 'right', format: 'bu3' }, { label: 'Price ($/bu)', align: 'right', format: 'price' }, { label: 'Price from' },
+        { label: 'Futures ($/bu)', align: 'right', format: 'price' }, { label: 'Basis ($/bu)', align: 'right', format: 'price' }, { label: 'Settled' },
       ],
       rows: exportRows,
       rowMeta: exportMeta,

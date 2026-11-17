@@ -266,12 +266,14 @@ export default function ShareRentReport({ onPayloadChange, headerActions }: Prop
   function buildExportPayload(): ExportPayload {
     const sections: ExportPayload['sections'] = []
 
+    // Named as the screen's own table is ("Total Bushels Owed"), not "Summary":
+    // the headline cards already take the workbook's Summary sheet.
     if (summaryByCrop.length > 0) {
       sections.push({
-        title: 'Summary',
+        title: 'Total Bushels Owed',
         columns: [
           { label: 'Crop' },
-          { label: 'Bushels Owed (total)', align: 'right', format: 'bu' },
+          { label: 'Bushels owed across all landowners', align: 'right', format: 'bu' },
         ],
         rows: summaryByCrop.map((s) => [s.cropName, s.landlordBu]),
       })
@@ -282,7 +284,10 @@ export default function ShareRentReport({ onPayloadChange, headerActions }: Prop
     const detailRows: Array<Array<string | number>> = []
     const detailMeta: Array<'data' | 'subtotal' | 'total'> = []
     const yieldOf = (bu: number, ac: number): number | string => (ac > 0 ? bu / ac : '')
-    for (const g of groups) {
+    // The same landowners the screen lists: a viewer's file leaves out the
+    // operation's own "Owned / No Landowner" ground, as their screen does.
+    const shown = viewer.isViewer ? groups.filter((g) => g.key !== NO_LANDOWNER_KEY) : groups
+    for (const g of shown) {
       for (const f of g.farms) {
         for (const c of f.crops) {
           for (const r of c.fields) {
@@ -303,7 +308,7 @@ export default function ShareRentReport({ onPayloadChange, headerActions }: Prop
       }
       for (const t of g.byCrop.values()) {
         detailRows.push([
-          `${g.landownerName} — ${t.cropName} TOTAL`, '', '', '',
+          `${g.landownerName} — ${t.cropName} total`, '', '', '',
           t.cropName, '',
           t.acres, t.dryBu, yieldOf(t.dryBu, t.acres), t.landlordBu,
         ])
@@ -312,9 +317,10 @@ export default function ShareRentReport({ onPayloadChange, headerActions }: Prop
     }
 
     sections.push({
-      title: 'Detail',
+      title: 'By Landowner',
       columns: [
-        { label: 'Landowner' }, { label: 'Farm' }, { label: 'FSA #' }, { label: 'Share %', align: 'right', format: 'pct0' },
+        // One decimal: a 33.33% or 12.5% share must not print as 33% or 13%.
+        { label: 'Landowner' }, { label: 'Farm' }, { label: 'FSA #' }, { label: 'Landlord share', align: 'right', format: 'pct1' },
         { label: 'Crop' }, { label: 'Field' },
         { label: 'Acres', align: 'right', format: 'acres' }, { label: 'Dry bu', align: 'right', format: 'bu' },
         { label: 'Yield (bu/ac)', align: 'right', format: 'yield' }, { label: 'Landlord bu', align: 'right', format: 'bu' },
@@ -326,7 +332,7 @@ export default function ShareRentReport({ onPayloadChange, headerActions }: Prop
     return {
       title: 'Share Rent Report',
       filters: filtersLabel(),
-      summary: summaryByCrop.map((s) => ({ label: `${s.cropName} owed`, value: formatNumber(s.landlordBu, 'bu') })),
+      summary: summaryByCrop.map((s) => ({ label: `${s.cropName} owed`, value: `${formatNumber(s.landlordBu, 'bu')} bu`, sub: cropYear === '' ? 'all landowners' : `${cropYear} · all landowners` })),
       sections,
     }
   }

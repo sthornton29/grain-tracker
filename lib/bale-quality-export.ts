@@ -21,14 +21,14 @@
 //                                bales that meet the spec (what the contract
 //                                says we provide).
 
-import type { ExportCell, ExportColumn, ExportPayload, ExportSection, NumFmt, PreludeRow, SummaryCard } from './exports'
+import { type ExportCell, type ExportColumn, type ExportPayload, type ExportSection, type NumFmt, type PreludeRow, type SummaryCard, type Tone } from './exports'
 import {
   and, averageifs, cell, col, concat, countif, countifs, div, eq, ge, gt, iferror, iff, le, mul, ne, num, or, round, str, sub, sum, sumifs, sumproduct, type FormulaNode, type RangeNode,
 } from './formula'
 import { factorText, factorValue, FACTORS, BAND_LABEL, COLOR_GRID_COLUMNS, COLOR_GRID_ROWS, colorGridCode, bandsFor, loanVsBase, loanVsBaseText, loanVsBaseTone, type FactorKey, type Band } from './cotton-quality'
 import { EVALUATION_LABEL, EXTRANEOUS_RULE_LABEL, specSummaryLine, type ContractQualitySpec } from './cotton-contract-spec'
 import {
-  colorGrid, comparisonRows, distribution, groupRows, kpis, occupiedBuckets, GROUP_BY_LABEL,
+  bandTone, cellBand, colorGrid, comparisonRows, distribution, groupRows, kpis, occupiedBuckets, GROUP_BY_LABEL,
   type BaleRow, type ContractView, type GroupBy, type Weighting,
 } from './bale-quality-report'
 
@@ -38,8 +38,17 @@ const TAB_BLUE = 'FF2563EB'
 
 const input = (v: number | string | null, format?: NumFmt): ExportCell => ({ v, input: true, format })
 const formula = (f: FormulaNode, format?: NumFmt): ExportCell => ({ v: null, f, format })
-const pct = (v: number | null | undefined): ExportCell => (v == null ? '' : { v: Math.round(v * 1000) / 10, format: 'pct1' })
+const pct = (v: number | null | undefined, tone?: Tone): ExportCell => (v == null ? '' : { v: Math.round(v * 1000) / 10, format: 'pct1', ...(tone ? { tone } : {}) })
 const n1 = (v: number | null | undefined, d: number): ExportCell => (v == null ? '' : Math.round(v * Math.pow(10, d)) / Math.pow(10, d))
+const count = (v: number): ExportCell => ({ v, format: 'int' })
+
+/** Bale lists leave in PBI order — the order the screen's bale list opens in. */
+const byPbi = (a: BaleRow, z: BaleRow): number => a.pbi.localeCompare(z.pbi, undefined, { numeric: true })
+
+/** A color the contract does not allow, in the color grid. (× prints in a PDF; ✕ does not.) */
+const OUTSIDE_MARK = '×'
+
+const PRACTICE_TEXT: Record<NonNullable<BaleRow['practice']>, string> = { dryland: 'Dryland', irrigated: 'Irrigated', mixed: 'Mixed' }
 
 export type BaleQualityExportInput = {
   cropYear: number
@@ -100,12 +109,30 @@ export function buildBaleQualityPdfPayload(input0: BaleQualityExportInput): Expo
   const sections: ExportSection[] = []
   const wLabel = weighting === 'lbs' ? '% of lbs' : '% of bales'
 
+  // Contract view — first, as on the screen (the headline when a contract is picked).
+  if (contract) {
+    const s = contract.view.summary
+    const lines: ExportCell[][] = [
+      ['Specification', specSummaryLine(contract.spec)],
+      ['Eligible classed bales', count(s.eligibleClassed)],
+      ['Meet the spec', `${s.meets.toLocaleString()} (${s.passRate != null ? (s.passRate * 100).toFixed(1) : '—'}% by bales · ${s.passRateLbs != null ? (s.passRateLbs * 100).toFixed(1) : '—'}% by lbs) · ${Math.round(s.meetsLbs).toLocaleString()} lbs`],
+      ['Fail the spec', count(s.fails)],
+      ['Not eligible (farm not on the contract)', count(s.notEligible)],
+      ['Not yet classed', count(s.notClassed)],
+      ['Cap', s.cap != null ? `${s.meets.toLocaleString()} qualifying of ${s.cap.toLocaleString()}` : 'none'],
+      ['Projected qualifying (estimate)', s.projection ? `${s.projection.projected.toLocaleString()} = ${(s.passRate! * 100).toFixed(1)}% × ${s.projection.estimatedBales.toLocaleString()} ${s.projection.estimateSource === 'picked' ? '(projected from the yield picked so far ÷ the average bale)' : s.projection.estimateSource === 'contract' ? "(the contract's estimate)" : '(bales expected by Turnrow: expected lint ÷ 500)'}` : 'no production estimate'],
+      ...s.pareto.map((p): ExportCell[] => [`Fails ${FACTORS[p.factor].label}`, `${p.bales.toLocaleString()} bale${p.bales === 1 ? '' : 's'} · ${p.onlyThis.toLocaleString()} fail${p.onlyThis === 1 ? 's' : ''} only this factor`]),
+    ]
+    sections.push({ title: `Contract: ${contract.label}`, columns: [{ label: 'Item' }, { label: 'Value' }], rows: lines })
+  }
+
   // Factor distributions.
   const distRows: ExportCell[][] = []
   const distMeta: Array<'data' | 'subhead'> = []
   for (const f of factors) {
     const d = distribution(rows, f, cropYear, weighting)
-    const avg = d.average != null ? ` · avg ${f === 'loan' ? `${loanVsBaseText(d.average, cropYear)} vs base (lbs-weighted)` : factorText(f, d.average)}` : ''
+    // An average staple reads to a tenth, as on the screen (factorText would print the whole fraction).
+    const avg = d.average != null ? ` · avg ${f === 'loan' ? `${loanVsBaseText(d.average, cropYear)} vs base (lbs-weighted)` : f === 'staple' ? d.average.toFixed(1) : factorText(f, d.average)}` : ''
     distRows.push([`${FACTORS[f].label}${avg}`, '', '', '', ''])
     distMeta.push('subhead')
     for (const b of occupiedBuckets(d)) {
@@ -122,8 +149,9 @@ export function buildBaleQualityPdfPayload(input0: BaleQualityExportInput): Expo
 
   // Color grid.
   const grid = colorGrid(rows, weighting)
+  const colorsLimited = (contract?.spec.allowed_color_codes?.length ?? 0) > 0
   sections.push({
-    title: 'Color grade grid (bales · % of classed)',
+    title: `Color grade grid (bales · % of classed${colorsLimited ? ` · ${OUTSIDE_MARK} = outside the contract’s allowed colors` : ''})`,
     columns: [{ label: 'Grade' }, ...COLOR_GRID_COLUMNS.map((c) => ({ label: c.label, align: 'right' as const }))],
     rows: COLOR_GRID_ROWS.map((r) => [
       `${r.row} ${r.symbol}`,
@@ -133,7 +161,7 @@ export function buildBaleQualityPdfPayload(input0: BaleQualityExportInput): Expo
         const cellV = grid.cells.get(code)
         const allowed = contract?.spec.allowed_color_codes?.length ? contract.spec.allowed_color_codes.includes(code) : true
         const text = cellV ? `${code}: ${cellV.bales} (${(cellV.pct * 100).toFixed(1)}%)` : code
-        return { v: allowed ? text : `${text} ✕`, tone: cellV && !allowed ? 'unfavorable' : cellV ? 'neutral' : 'muted' }
+        return { v: allowed ? text : `${text} ${OUTSIDE_MARK}`, tone: cellV && !allowed ? 'unfavorable' : cellV ? 'neutral' : 'muted' }
       }),
     ]),
   })
@@ -156,9 +184,10 @@ export function buildBaleQualityPdfPayload(input0: BaleQualityExportInput): Expo
     for (const f of factors) {
       const c = r.cells[f]
       if (FACTORS[f].kind === 'number') out.push(c.average == null ? '' : f === 'loan' ? { v: loanVsBase(c.average, cropYear), format: 'dec2', tone: loanVsBaseTone(c.average, cropYear) } : n1(c.average, FACTORS[f].decimals))
-      if (FACTORS[f].banded) out.push(pct(c.classed ? c.premium : null), pct(c.classed ? c.base : null), pct(c.classed ? c.discount : null))
+      // The screen's colors: premium green, a discount red, the share meeting the contract green or amber.
+      if (FACTORS[f].banded) out.push(pct(c.classed ? c.premium : null, 'favorable'), pct(c.classed ? c.base : null), pct(c.classed ? c.discount : null, (c.discount ?? 0) > 0 ? 'unfavorable' : 'muted'))
     }
-    if (contract) out.push(pct(r.meetsPct))
+    if (contract) out.push(pct(r.meetsPct, r.meetsPct != null && r.meetsPct >= 0.5 ? 'favorable' : 'warning'))
     return out
   }
   sections.push({
@@ -168,26 +197,9 @@ export function buildBaleQualityPdfPayload(input0: BaleQualityExportInput): Expo
     rowMeta: [...cmp.rows.map(() => 'data' as const), 'total'],
   })
 
-  // Contract view.
-  if (contract) {
-    const s = contract.view.summary
-    const lines: ExportCell[][] = [
-      ['Specification', specSummaryLine(contract.spec)],
-      ['Eligible classed bales', s.eligibleClassed],
-      ['Meet the spec', `${s.meets} (${s.passRate != null ? (s.passRate * 100).toFixed(1) : '—'}% by bales · ${s.passRateLbs != null ? (s.passRateLbs * 100).toFixed(1) : '—'}% by lbs) · ${Math.round(s.meetsLbs).toLocaleString()} lbs`],
-      ['Fail the spec', s.fails],
-      ['Not eligible (farm not on the contract)', s.notEligible],
-      ['Not yet classed', s.notClassed],
-      ['Cap', s.cap != null ? `${s.meets.toLocaleString()} qualifying of ${s.cap.toLocaleString()}` : 'none'],
-      ['Projected qualifying (estimate)', s.projection ? `${s.projection.projected.toLocaleString()} = ${(s.passRate! * 100).toFixed(1)}% × ${s.projection.estimatedBales.toLocaleString()} ${s.projection.estimateSource === 'picked' ? '(projected from the yield picked so far ÷ the average bale)' : s.projection.estimateSource === 'contract' ? "(the contract's estimate)" : "(the app's expected production)"}` : 'no production estimate'],
-      ...s.pareto.map((p): ExportCell[] => [`Fails ${FACTORS[p.factor].label}`, `${p.bales} bales · ${p.onlyThis} fail only this factor`]),
-    ]
-    sections.push({ title: `Contract: ${contract.label}`, columns: [{ label: 'Item' }, { label: 'Value' }], rows: lines })
-  }
-
   // Bale list.
   const baleColumns: ExportColumn[] = [
-    { label: 'PBI' }, { label: 'Receipt' }, { label: 'Farm' }, { label: 'Field' }, { label: 'Variety' }, { label: 'Harvested' }, { label: 'Class date' },
+    { label: 'PBI' }, { label: 'Receipt' }, { label: 'Farm' }, { label: 'Field' }, { label: 'Variety' }, { label: 'Harvested' }, { label: 'Class date', format: 'date' },
     ...factors.map((f): ExportColumn => ({ label: factorLabel(f), align: FACTORS[f].kind === 'number' ? 'right' : 'left', format: factorFormat(f) })),
     { label: 'Lbs', align: 'right', format: 'lbs' }, { label: 'Disposition' },
   ]
@@ -195,13 +207,20 @@ export function buildBaleQualityPdfPayload(input0: BaleQualityExportInput): Expo
   sections.push({
     title: 'Bales',
     columns: baleColumns,
-    rows: rows.map((r): ExportCell[] => {
+    rows: rows.slice().sort(byPbi).map((r): ExportCell[] => {
       const out: ExportCell[] = [r.pbi, r.receiptLabel, r.farmName, r.fieldName, r.variety ?? '', r.harvestFrom ? r.harvestLabel : '', r.classDate ?? '']
-      for (const f of factors) out.push(factorShownValue(r, f, cropYear))
+      for (const f of factors) {
+        // Colored as the screen's bale list is: a premium reading green, a discount red; loan value by its side of the base rate.
+        const shown = factorShownValue(r, f, cropYear)
+        const raw = r.grade ? factorValue(r.grade, f) : null
+        const tone = raw == null ? 'neutral' : f === 'loan' ? loanVsBaseTone(typeof raw === 'number' ? raw : null, cropYear) : bandTone(cellBand(f, raw, cropYear))
+        out.push(tone === 'favorable' || tone === 'unfavorable' ? { v: shown, tone } : shown)
+      }
       out.push(Math.round(r.lbs), DISPOSITION_TEXT[r.disposition])
       if (contract) {
         const ev = contract.view.evaluationOf(r.id)
-        out.push(ev ? EVALUATION_LABEL[ev.status] : '', ev && ev.status === 'fails' ? ev.failures.map((x) => x.text).join('; ') : '')
+        const resultTone: Tone | undefined = ev?.status === 'meets' ? 'favorable' : ev?.status === 'fails' ? 'unfavorable' : ev?.status === 'not_classed' ? 'warning' : undefined
+        out.push(!ev ? '' : resultTone ? { v: EVALUATION_LABEL[ev.status], tone: resultTone } : EVALUATION_LABEL[ev.status], ev && ev.status === 'fails' ? ev.failures.map((x) => x.text).join('; ') : '')
       }
       return out
     }),
@@ -250,7 +269,7 @@ const BALE_FACTOR_COLS: Array<{ key: FactorKey; col: string }> = [
 
 export function buildBaleQualityWorkbook(input0: BaleQualityExportInput): ExportPayload {
   const { cropYear, rows: allRows, factors, groupBy, weighting, contract } = input0
-  const rows = allRows.filter((r) => r.grade)
+  const rows = allRows.filter((r) => r.grade).sort(byPbi)
   const B = (c: string): RangeNode => col(SECTION.bales, c)
   const S = (item: SpecItem): FormulaNode => cell(SECTION.spec, 'value', SPEC_ROW[item])
   const hasFarms = (contract?.spec.eligible_fsa_farms?.length ?? 0) > 0
@@ -269,20 +288,20 @@ export function buildBaleQualityWorkbook(input0: BaleQualityExportInput): Export
     { key: 'field', label: 'Field' },
     { key: 'variety', label: 'Variety' },
     { key: 'practice', label: 'Practice' },
-    { key: 'harvest_from', label: 'Harvested from', note: 'First picked date on the seed cotton load tickets linked to the bale’s gin receipt.' },
-    { key: 'harvest_to', label: 'Harvested to', note: 'Last picked date on those tickets — the same day as “from” when the receipt’s loads were all picked one day.' },
-    { key: 'class_date', label: 'Class date' },
+    { key: 'harvest_from', label: 'Harvested from', format: 'date', note: 'First picked date on the seed cotton load tickets linked to the bale’s gin receipt.' },
+    { key: 'harvest_to', label: 'Harvested to', format: 'date', note: 'Last picked date on those tickets — the same day as “from” when the receipt’s loads were all picked one day.' },
+    { key: 'class_date', label: 'Class date', format: 'date' },
     { key: 'color', label: 'Color', align: 'right' },
     { key: 'leaf', label: 'Leaf', align: 'right', format: 'int' },
     { key: 'staple', label: 'Staple', align: 'right', format: 'dec1' },
     { key: 'mic', label: 'Mic', align: 'right', format: 'dec2' },
     { key: 'strength', label: 'Strength', align: 'right', format: 'dec1' },
     { key: 'uniformity', label: 'Uniformity', align: 'right', format: 'dec1' },
-    { key: 'extraneous', label: 'Ex', align: 'right' },
-    { key: 'remarks', label: 'Rm', align: 'right' },
+    { key: 'extraneous', label: 'Extraneous', align: 'right' },
+    { key: 'remarks', label: 'Remarks', align: 'right' },
     { key: 'rd', label: 'Rd', align: 'right', format: 'dec1' },
     { key: 'plus_b', label: '+b', align: 'right', format: 'dec1' },
-    { key: 'quadrant', label: 'Quad', align: 'right' },
+    { key: 'quadrant', label: 'Quadrant', align: 'right' },
     { key: 'trash', label: 'Trash', align: 'right', format: 'dec1' },
     { key: 'length', label: 'Length', align: 'right', format: 'int' },
     { key: 'loan', label: 'Loan ¢/lb', align: 'right', format: 'dec2', note: 'Classing loan value in cents per pound (59.90 = 59.9¢).' },
@@ -290,7 +309,8 @@ export function buildBaleQualityWorkbook(input0: BaleQualityExportInput): Export
     { key: 'loan_total', label: 'Loan $', align: 'right', format: 'usd2' },
     { key: 'lbs', label: 'Lbs', align: 'right', format: 'lbs' },
     { key: 'disposition', label: 'Disposition' },
-    { key: 'group', label: GROUP_BY_LABEL[groupBy], note: 'The report’s grouping; the By Group tab reads this column.' },
+    // "Group (farm)", not a second column headed "Farm".
+    { key: 'group', label: `Group (${GROUP_BY_LABEL[groupBy].toLowerCase()})`, note: 'The report’s grouping; the By Group tab reads this column.' },
   ]
   if (contract) {
     baleColumns.push({ key: 'eligible', label: 'Eligible', note: 'Yes when the farm is on the Contract Spec tab’s farm list (or the list is empty).' })
@@ -318,7 +338,7 @@ export function buildBaleQualityWorkbook(input0: BaleQualityExportInput): Export
   const baleRows: ExportCell[][] = rows.map((r, i) => {
     const out: ExportCell[] = [
       input(r.pbi), input(r.receiptLabel), input(r.ginName), input(r.entityName), input(r.farmName), input(r.fsa ?? ''), input(r.fieldName),
-      input(r.variety ?? ''), input(r.practice ?? ''), input(r.harvestFrom ?? ''), input(r.harvestTo ?? ''), input(r.classDate ?? ''),
+      input(r.variety ?? ''), input(r.practice ? PRACTICE_TEXT[r.practice] : ''), input(r.harvestFrom ?? ''), input(r.harvestTo ?? ''), input(r.classDate ?? ''),
       ...BALE_FACTOR_COLS.map(({ key }) => input(factorCellValue(r, key) as string | number)),
       formula(iff(ne(cell(SECTION.bales, 'loan', i), str('')), sub(cell(SECTION.bales, 'loan', i), num(bands.baseLoanCents)), str('')), 'dec2'),
       input(r.loanTotal, 'usd2'), input(Math.round(r.lbs), 'lbs'), input(DISPOSITION_TEXT[r.disposition]), input(groupLabelOf(r, groupBy)),
@@ -360,14 +380,17 @@ export function buildBaleQualityWorkbook(input0: BaleQualityExportInput): Export
         i < farms.length ? input(farms[i]) : '',
       ])
     }
+    // Above the header: the title and one line of context, nothing more (it
+    // is all frozen with the header). The contract's own wording goes under
+    // the table. No filter buttons: the Bales tab's formulas read these cells
+    // by position, and a sort here would move a threshold out from under them.
     specSection = {
-      key: SECTION.spec, title: 'Contract Spec', plain: true, tabColor: TAB_BLUE,
+      key: SECTION.spec, title: 'Contract Spec', plain: true, tabColor: TAB_BLUE, autoFilter: false,
       prelude: [
         { kind: 'title', cells: [`Contract quality specification — ${contract.label}`] },
         { kind: 'text', cells: ['Blue cells are the contract’s thresholds. Change one and the Bales tab’s "Meets spec" column and the Summary counts recompute. A blank threshold means no requirement.'] },
-        { kind: 'text', cells: [spec.source_clause ? `Contract wording: ${spec.source_clause}` : ''] },
-        { kind: 'blank', cells: [] },
       ],
+      postlude: spec.source_clause ? [{ kind: 'text', cells: [`Contract wording: ${spec.source_clause}`] }] : undefined,
       columns: [
         { key: 'item', label: 'Threshold', width: 30 }, { key: 'value', label: 'Value', align: 'right', width: 14 },
         { key: 'color', label: 'Allowed color codes', align: 'right', width: 20, note: 'A bale’s color grade must be one of these codes. Add or delete codes here.' },
@@ -381,30 +404,31 @@ export function buildBaleQualityWorkbook(input0: BaleQualityExportInput): Export
   const total: FormulaNode = countif(B('pbi'), str('<>'))
   const totalLbs: FormulaNode = sumifs(B('lbs'), [B('pbi'), str('<>')])
   const summaryRows: ExportCell[][] = []
-  const summaryMeta: Array<'data' | 'subhead' | 'total'> = []
-  const push = (cells: ExportCell[], kind: 'data' | 'subhead' | 'total' = 'data') => { summaryRows.push(cells); summaryMeta.push(kind) }
+  // Columns: factor · bucket / item · band · bales · lbs · % · average · lbs-weighted average.
+  const summaryMeta: Array<'data' | 'subhead' | 'subtotal'> = []
+  const push = (cells: ExportCell[], kind: 'data' | 'subhead' | 'subtotal' = 'data') => { summaryRows.push(cells); summaryMeta.push(kind) }
 
-  push(['Bales', 'Classed bales in the filter', '', formula(total, 'int'), '', '', ''], 'data')
-  push(['Bales', 'Lint lbs (classed)', '', '', formula(totalLbs, 'lbs'), '', ''], 'data')
+  push(['Bales', 'Classed bales in the filter', '', formula(total, 'int'), '', '', '', ''], 'data')
+  push(['Bales', 'Lint lbs (classed)', '', '', formula(totalLbs, 'lbs'), '', '', ''], 'data')
   if (contract) {
-    push([`Contract: ${contract.label}`, '', '', '', '', '', ''], 'subhead')
+    push([`Contract: ${contract.label}`, '', '', '', '', '', '', ''], 'subhead')
     const meets = countif(B('result'), str('Meets'))
     const fails = countif(B('result'), str('Fails'))
     const notEligible = countif(B('result'), str('Not eligible'))
     const eligible = countif(B('eligible'), str('Yes'))
-    push(['Contract', 'Eligible classed bales', '', formula(eligible, 'int'), '', '', ''])
-    push(['Contract', 'Meet the spec', '', formula(meets, 'int'), formula(sumifs(B('lbs'), [B('result'), str('Meets')]), 'lbs'), formula(iferror(div(meets, eligible), num(0)), fmtPctRatio), ''])
-    push(['Contract', 'Fail the spec', '', formula(fails, 'int'), formula(sumifs(B('lbs'), [B('result'), str('Fails')]), 'lbs'), formula(iferror(div(fails, eligible), num(0)), fmtPctRatio), ''])
-    push(['Contract', 'Not eligible (farm not on the contract)', '', formula(notEligible, 'int'), '', '', ''])
+    push(['Contract', 'Eligible classed bales', '', formula(eligible, 'int'), '', '', '', ''])
+    push(['Contract', 'Meet the spec', '', formula(meets, 'int'), formula(sumifs(B('lbs'), [B('result'), str('Meets')]), 'lbs'), formula(iferror(div(meets, eligible), num(0)), fmtPctRatio), '', ''])
+    push(['Contract', 'Fail the spec', '', formula(fails, 'int'), formula(sumifs(B('lbs'), [B('result'), str('Fails')]), 'lbs'), formula(iferror(div(fails, eligible), num(0)), fmtPctRatio), '', ''])
+    push(['Contract', 'Not eligible (farm not on the contract)', '', formula(notEligible, 'int'), '', '', '', ''])
     const passRate = iferror(div(meets, eligible), num(0))
-    push(['Contract', 'Projected qualifying = pass rate × estimated bales (estimate)', '', formula(round(mul(passRate, S('estimated_bales')), 0), 'int'), '', formula(passRate, fmtPctRatio), ''])
-    push(['Contract', 'Bale cap', '', formula(S('bale_cap'), 'int'), '', '', ''])
+    push(['Contract', 'Projected qualifying = pass rate × estimated bales (estimate)', '', formula(round(mul(passRate, S('estimated_bales')), 0), 'int'), '', formula(passRate, fmtPctRatio), '', ''])
+    push(['Contract', 'Bale cap', '', formula(S('bale_cap'), 'int'), '', '', '', ''])
   }
   const classedCount = (c: string): FormulaNode => countif(B(c), str('<>'))
   for (const f of factors) {
     const def = FACTORS[f]
     const colKey = BALE_FACTOR_COLS.find((x) => x.key === f)?.col ?? f
-    push([def.label, '', '', '', '', '', ''], 'subhead')
+    push([def.label, '', '', '', '', '', '', ''], 'subhead')
     if (def.kind === 'number') {
       const avg: FormulaNode = f === 'loan'
         ? iferror(div(sumproduct(B('loan'), B('lbs')), sumifs(B('lbs'), [B('loan'), str('<>')])), str('—'))
@@ -412,9 +436,10 @@ export function buildBaleQualityWorkbook(input0: BaleQualityExportInput): Export
       const lbsAvg: FormulaNode = iferror(div(sumproduct(B(colKey), B('lbs')), sumifs(B('lbs'), [B(colKey), str('<>')])), str('—'))
       const avgFmt: NumFmt = f === 'loan' || f === 'mic' ? 'dec2' : def.decimals === 0 ? 'int' : 'dec1'
       if (f === 'loan') {
-        push([def.label, `Average vs the ${bands.baseLoanCents.toFixed(2)}¢ base loan rate (lbs-weighted)`, '', formula(classedCount(colKey), 'int'), '', formula(iferror(sub(avg, num(bands.baseLoanCents)), str('—')), 'dec2'), ''])
+        push([def.label, `Average vs the ${bands.baseLoanCents.toFixed(2)}¢ base loan rate (lbs-weighted)`, '', formula(classedCount(colKey), 'int'), '', '', formula(iferror(sub(avg, num(bands.baseLoanCents)), str('—')), 'dec2'), ''])
       }
-      push([def.label, f === 'loan' ? 'Average loan value (lbs-weighted — loan value always is)' : 'Average (bale-weighted)', '', formula(classedCount(colKey), 'int'), '', formula(avg, avgFmt), f === 'loan' ? '' : formula(lbsAvg, avgFmt)])
+      // An average sits under "Average", never under the "% of bales" heading.
+      push([def.label, f === 'loan' ? 'Average loan value (lbs-weighted — loan value always is)' : 'Average (bale-weighted)', '', formula(classedCount(colKey), 'int'), '', '', formula(avg, avgFmt), f === 'loan' ? '' : formula(lbsAvg, avgFmt)])
     }
     // Distribution buckets as COUNTIFS. Code factors count exact codes per bucket
     // (color: each code; extraneous: by kind prefix; quadrant: digit).
@@ -445,7 +470,7 @@ export function buildBaleQualityWorkbook(input0: BaleQualityExportInput): Export
         countF = countif(B(colKey), str(code))
         lbsF = sumifs(B('lbs'), [B(colKey), str(code)])
       }
-      push([def.label, b.label, b.band ? BAND_LABEL[b.band] : '', formula(countF, 'int'), formula(lbsF, 'lbs'), formula(iferror(div(weighting === 'lbs' ? lbsF : countF, weighting === 'lbs' ? denomLbs : denomCount), num(0)), fmtPctRatio), ''])
+      push([def.label, b.label, b.band ? BAND_LABEL[b.band] : '', formula(countF, 'int'), formula(lbsF, 'lbs'), formula(iferror(div(weighting === 'lbs' ? lbsF : countF, weighting === 'lbs' ? denomLbs : denomCount), num(0)), fmtPctRatio), '', ''])
     }
     if (def.banded) {
       for (const band of ['premium', 'base', 'discount'] as Band[]) {
@@ -470,24 +495,30 @@ export function buildBaleQualityWorkbook(input0: BaleQualityExportInput): Export
         if (countParts.length === 0) continue
         const countF: FormulaNode = countParts.length === 1 ? countParts[0] : sum(...countParts)
         const lbsF: FormulaNode = lbsParts.length === 1 ? lbsParts[0] : sum(...lbsParts)
-        push([def.label, `% ${BAND_LABEL[band].toLowerCase()}`, BAND_LABEL[band], formula(countF, 'int'), formula(lbsF, 'lbs'), formula(iferror(div(weighting === 'lbs' ? lbsF : countF, weighting === 'lbs' ? denomLbs : denomCount), num(0)), fmtPctRatio), ''], 'total')
+        // A band's share of the factor: a subtotal of its buckets, not a grand total.
+        push([def.label, `% ${BAND_LABEL[band].toLowerCase()}`, BAND_LABEL[band], formula(countF, 'int'), formula(lbsF, 'lbs'), formula(iferror(div(weighting === 'lbs' ? lbsF : countF, weighting === 'lbs' ? denomLbs : denomCount), num(0)), fmtPctRatio), '', ''], 'subtotal')
       }
     }
   }
 
   const summarySection: ExportSection = {
     key: SECTION.summary, title: 'Summary', plain: true, tabColor: BRAND_GREEN,
+    // Above the header: the title and the filter line, nothing more (it is all
+    // frozen with the header). The headline figures and the reading notes go
+    // under the table, where they scroll with it.
     prelude: [
       { kind: 'title', cells: [`Bale Quality — ${cropYear} crop`] },
-      { kind: 'subtitle', cells: [input0.filterSummary] },
+      { kind: 'text', cells: [input0.filterSummary] },
+    ],
+    postlude: [
       { kind: 'kpi', cells: ['Classed bales', formula(total, 'int'), 'Lint lbs', formula(totalLbs, 'lbs'), 'Avg loan vs base ¢/lb', formula(iferror(sub(div(sumproduct(B('loan'), B('lbs')), sumifs(B('lbs'), [B('loan'), str('<>')])), num(bands.baseLoanCents)), num(0)), 'dec2')] },
       { kind: 'text', cells: [`Price bands: ${bands.source}. Distributions are ${weighting === 'lbs' ? 'lbs' : 'bale'}-weighted; averages are bale-weighted except loan value (always lbs-weighted). Every figure is a formula over the Bales tab.`] },
-      { kind: 'blank', cells: [] },
     ],
     columns: [
       { key: 'factor', label: 'Factor', width: 20 }, { key: 'item', label: 'Bucket / item', width: 44 }, { key: 'band', label: 'Band', width: 10 },
       { key: 'bales', label: 'Bales', align: 'right', format: 'int' }, { key: 'lbs', label: 'Lbs', align: 'right', format: 'lbs' },
-      { key: 'pct', label: weighting === 'lbs' ? '% of lbs' : '% of bales', align: 'right', format: 'ratio' }, { key: 'alt', label: 'Lbs-weighted avg', align: 'right' },
+      { key: 'pct', label: weighting === 'lbs' ? '% of lbs' : '% of bales', align: 'right', format: 'ratio' },
+      { key: 'avg', label: 'Average', align: 'right' }, { key: 'alt', label: 'Lbs-weighted average', align: 'right' },
     ],
     rows: summaryRows,
     rowMeta: summaryMeta,
@@ -522,11 +553,11 @@ export function buildBaleQualityWorkbook(input0: BaleQualityExportInput): Export
   })
   const groupsSection: ExportSection = {
     key: SECTION.groups, title: 'By Group', plain: true, columns: groupColumns, rows: groupRowsOut,
-    note: `One row per ${GROUP_BY_LABEL[groupBy].toLowerCase()}; every figure is a formula over the Bales tab (AVERAGEIFS is bale-weighted; loan value is lbs-weighted and shown against the ${bands.baseLoanCents.toFixed(2)}¢ base loan rate).`,
+    note: `One row per ${GROUP_BY_LABEL[groupBy].toLowerCase()}; every figure is a formula over the Bales tab (averages are bale-weighted; loan value is lbs-weighted and shown against the ${bands.baseLoanCents.toFixed(2)}¢ base loan rate).`,
   }
 
   const notesSection: ExportSection = {
-    key: SECTION.notes, title: 'Notes', plain: true, tabColor: TAB_GRAY,
+    key: SECTION.notes, title: 'Notes', plain: true, tabColor: TAB_GRAY, autoFilter: false, // paragraphs to read, not a list to sort
     columns: [{ key: 'note', label: 'Notes', width: 120 }],
     rows: [
       ['Bale Quality workbook — every figure on the Summary and By Group tabs is a live formula over the Bales tab.'],
@@ -537,14 +568,14 @@ export function buildBaleQualityWorkbook(input0: BaleQualityExportInput): Export
         [`Contract Spec tab: ${specSummaryLine(contract.spec)}. Change a blue threshold cell, or add / delete a color code or FSA farm number, and the Bales tab’s Meets spec column and the Summary’s contract counts move. A blank threshold is no requirement.`],
         ['Meets spec tests each factor inclusively at the value written; a bale with a blank reading for a tested factor fails that factor. Not eligible = the bale’s farm is not on the farm list; such bales are left out of the pass rate.'],
       ] : []),
-      [`Column guide — PBI: bale number · FSA #: the farm’s FSA number · Color / Leaf / Staple / Mic / Strength / Uniformity / Ex / Rm / Rd / +b / Quad / Trash / Length: the USDA classing data as imported · Loan ¢/lb and Loan $: the classing loan value (cents per pound, and the bale’s total) · Loan vs base ¢/lb: the loan value above (+) or below (in parentheses) the ${bands.baseLoanCents.toFixed(2)}¢ base loan rate · Lbs: bale net weight from the gin receipt · Disposition: held / in CCC loan / sold / on contract / pool.`],
+      [`Column guide — PBI: bale number · FSA #: the farm’s FSA number · Color / Leaf / Staple / Mic / Strength / Uniformity / Extraneous / Remarks / Rd / +b / Quadrant / Trash / Length: the USDA classing data as imported · Loan ¢/lb and Loan $: the classing loan value (cents per pound, and the bale’s total) · Loan vs base ¢/lb: the loan value above (+) or below (in parentheses) the ${bands.baseLoanCents.toFixed(2)}¢ base loan rate · Lbs: bale net weight from the gin receipt · Disposition: held / in CCC loan / sold / on contract / pool.`],
     ],
   }
 
   const sections: ExportSection[] = [summarySection]
   if (specSection) sections.push(specSection)
   sections.push(groupsSection, balesSection, notesSection)
-  return {
+  const payload: ExportPayload = {
     title: 'Bale Quality',
     filters: input0.filterSummary,
     sections,
@@ -552,6 +583,7 @@ export function buildBaleQualityWorkbook(input0: BaleQualityExportInput): Export
     excel: { title: `Bale Quality ${cropYear}`, subject: 'Cotton bale quality — classing data with live formulas', company: 'Turnrow', zeroAsDash: false },
     filename: `Turnrow_Bale_Quality_${cropYear}_${contract ? 'Contract_' : ''}${dateStamp(input0.generatedAt)}`,
   }
+  return payload
 }
 
 const EXTRANEOUS_PREFIX: Record<string, string> = { '0': 'prep', '1': 'bark', '2': 'grass', '3': 'seed_coat', '4': 'oil', '5': 'spindle_twist', '6': 'other', '7': 'plastic' }
@@ -577,27 +609,30 @@ function groupLabelOf(r: BaleRow, by: GroupBy): string {
 export function buildQualifyingBalesWorkbook(input0: BaleQualityExportInput): ExportPayload {
   const contract = input0.contract
   if (!contract) throw new Error('a contract must be selected')
-  const rows = input0.rows.filter((r) => contract.view.evaluationOf(r.id)?.status === 'meets')
+  const rows = input0.rows.filter((r) => contract.view.evaluationOf(r.id)?.status === 'meets').sort(byPbi)
   const columns: ExportColumn[] = [
-    { label: 'PBI' }, { label: 'Gin' }, { label: 'Class date' }, { label: 'Lbs', align: 'right', format: 'lbs' },
+    { label: 'PBI' }, { label: 'Gin' }, { label: 'Class date', format: 'date' }, { label: 'Lbs', align: 'right', format: 'lbs' },
     { label: 'Color', align: 'right' }, { label: 'Leaf', align: 'right', format: 'int' }, { label: 'Staple', align: 'right', format: 'dec1' },
     { label: 'Mic', align: 'right', format: 'dec2' }, { label: 'Strength', align: 'right', format: 'dec1' }, { label: 'Uniformity', align: 'right', format: 'dec1' },
     { label: 'Rd', align: 'right', format: 'dec1' }, { label: '+b', align: 'right', format: 'dec1' }, { label: 'Trash', align: 'right', format: 'dec1' },
-    { label: 'Length', align: 'right', format: 'int' }, { label: 'Ex', align: 'right' }, { label: 'Rm', align: 'right' },
+    { label: 'Length', align: 'right', format: 'int' }, { label: 'Extraneous', align: 'right' }, { label: 'Remarks', align: 'right' },
     { label: 'FSA farm #' }, { label: 'Farm' }, { label: 'Field' },
   ]
   const keys: FactorKey[] = ['color', 'leaf', 'staple', 'mic', 'strength', 'uniformity', 'rd', 'plus_b', 'trash', 'length', 'extraneous', 'remarks']
+  // Above the header: the title and the specification, nothing more (it is
+  // all frozen with the header). The count and the weight go under the list.
   const prelude: PreludeRow[] = [
     { kind: 'title', cells: [`Bales meeting the ${contract.label} specification — ${input0.cropYear} crop`] },
-    { kind: 'subtitle', cells: [specSummaryLine(contract.spec)] },
-    { kind: 'kpi', cells: ['Bales', rows.length, 'Lint lbs', Math.round(rows.reduce((s, r) => s + r.lbs, 0))] },
-    { kind: 'blank', cells: [] },
+    { kind: 'text', cells: [specSummaryLine(contract.spec)] },
+  ]
+  const postlude: PreludeRow[] = [
+    { kind: 'kpi', cells: ['Bales', count(rows.length), 'Lint lbs', { v: Math.round(rows.reduce((s, r) => s + r.lbs, 0)), format: 'lbs' }] },
   ]
   return {
     title: `Qualifying bales — ${contract.label}`,
     filters: input0.filterSummary,
     sections: [{
-      title: 'Qualifying bales', plain: true, prelude, columns,
+      title: 'Qualifying bales', plain: true, prelude, postlude, columns,
       rows: rows.map((r): ExportCell[] => [
         r.pbi, r.ginName, r.classDate ?? '', Math.round(r.lbs),
         ...keys.map((k) => factorCellValue(r, k)),

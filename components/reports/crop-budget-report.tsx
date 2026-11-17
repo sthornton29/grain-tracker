@@ -49,6 +49,7 @@ import { axisValues, closestIndex, defaultPriceStep, defaultYieldStep } from '@/
 import { theadCls, toneText, signedTone, fmtUsd, ReportHeader, ReportFilterBar, FilterField, selectCls, filterSummaryOf, cropYearLabel } from '@/components/reports/report-kit'
 import { ConfirmDialog } from '@/components/app-dialog'
 import { reportError } from '@/lib/friendly-error'
+import { fmtDate } from '@/lib/format-date'
 import { formatNumber, type ExportPayload, type ExportCell } from '@/lib/exports'
 import type { BudgetLine, BudgetScenario, Crop, CropAssumption, CropInsurancePolicy, FieldPlanting } from '@/lib/types'
 
@@ -626,39 +627,62 @@ export default function CropBudgetReport({ onPayloadChange, headerActions }: Pro
   const buildExportPayload = useCallback((): ExportPayload => {
     const year = budgetYear === '' ? defaultBudgetYear : budgetYear
     const viewLabel = breakoutView === 'blended' ? 'Blended by crop' : 'Broken out by practice'
+    // The same words the report header uses for the matrix cells.
+    const cellLabel = matrixView === 'profit' ? 'Profit per acre' : 'Revenue per acre'
+    // One table holds grain rows ($/bu, bu/ac) and cotton rows ($/lb, lbs/ac):
+    // each header names the unit(s) actually in the table.
+    const anyCotton = displayRows.some((d) => d.isCotton)
+    const anyGrain = displayRows.some((d) => !d.isCotton)
+    const unitOf = (grain: string, cotton: string) => (anyCotton && anyGrain ? `${grain}; cotton ${cotton}` : anyCotton ? cotton : grain)
+    const priceCell = (d: DisplayRow, v: number | null): ExportCell =>
+      v != null ? { v, format: d.isCotton ? 'cents' as const : 'price' as const } : ''
     const sections: ExportPayload['sections'] = []
     sections.push({
       title: `Allocation — ${year} budget`,
       columns: [
         { label: 'Crop' }, { label: 'Acres', align: 'right', format: 'acres' },
-        { label: 'Yield/ac', align: 'right', format: 'yield' },
-        { label: 'Price', align: 'right' },
+        { label: `Yield (${unitOf('bu/ac', 'lbs/ac')})`, align: 'right', format: 'yield' },
+        { label: `Price (${unitOf('$/bu', '$/lb')})`, align: 'right', format: 'price' },
         { label: 'Revenue/ac', align: 'right', format: 'usd2' }, { label: 'Cost/ac', align: 'right', format: 'usd2' },
         { label: 'Profit/ac', align: 'right', format: 'usd2' }, { label: 'Total Profit', align: 'right', format: 'usd0' },
+        // The breakevens each section prints beside its matrix on screen.
+        { label: `Breakeven Price (${unitOf('$/bu', '$/lb')})`, align: 'right', format: 'price' },
+        { label: `Breakeven Yield (${unitOf('bu/ac', 'lbs/ac')})`, align: 'right', format: 'yield' },
       ],
       rows: [
         ...displayRows.map((d): ExportCell[] => [
           d.composition ? `${d.name} — ${d.composition}` : d.name,
           d.acres ?? '',
           d.yieldPerAcre != null ? Math.round(d.yieldPerAcre * 10) / 10 : '',
-          d.math.effectivePrice != null ? { v: d.math.effectivePrice, format: d.isCotton ? 'cents' as const : 'price' as const } : '',
+          priceCell(d, d.math.effectivePrice),
           d.math.revenuePerAcre ?? '',
           d.costPerAcre != null ? Math.round(d.costPerAcre * 100) / 100 : '',
           d.math.profitPerAcre != null ? { v: d.math.profitPerAcre, tone: signedTone(d.math.profitPerAcre) } : '',
           d.math.totalProfit != null ? { v: d.math.totalProfit, tone: signedTone(d.math.totalProfit) } : '',
+          priceCell(d, d.math.breakevenPrice),
+          d.math.breakevenYield ?? '',
         ]),
-        ['Total', totals.totalAcres, '', '', '', '', totals.weightedProfitPerAcre ?? '', { v: totals.totalProfit, tone: signedTone(totals.totalProfit) }],
+        [
+          'Total', totals.totalAcres, '', '', '', '',
+          totals.weightedProfitPerAcre != null ? { v: totals.weightedProfitPerAcre, tone: signedTone(totals.weightedProfitPerAcre) } : '',
+          { v: totals.totalProfit, tone: signedTone(totals.totalProfit) }, '', '',
+        ],
       ],
       rowMeta: [...displayRows.map(() => 'data' as const), 'total' as const],
     })
     for (const d of displayRows) {
       const grid = matrixGridFor(d)
       if (!grid) continue
+      const yUnit = d.isCotton ? 'lbs/ac' : 'bu/ac'
       sections.push({
-        title: `${d.name} — price × yield ${matrixView === 'profit' ? 'profit' : 'revenue'}/ac`,
+        // The row's own name: short enough for a sheet tab, and unique.
+        title: d.name,
+        // The screen's two-row header: prices run down the side, and the
+        // yield axis spans the scenario columns.
+        groups: [{ label: '', span: 1 }, { label: `${cellLabel} at each yield (${yUnit})`, span: grid.yieldValues.length }],
         columns: [
-          { label: `Price ${d.isCotton ? '$/lb' : '$/bu'}`, align: 'right', format: d.isCotton ? 'cents' : 'price' },
-          ...grid.yieldValues.map((y) => ({ label: `${formatNumber(y, 'yield')} ${d.isCotton ? 'lbs/ac' : 'bu/ac'}`, align: 'right' as const, format: 'usd2' as const })),
+          { label: `Price (${d.isCotton ? '$/lb' : '$/bu'})`, align: 'right', format: d.isCotton ? 'cents' : 'price' },
+          ...grid.yieldValues.map((y) => ({ label: `${formatNumber(y, 'yield')} ${yUnit}`, align: 'right' as const, format: 'usd2' as const })),
         ],
         rows: grid.grid.map((row, ri): ExportCell[] => [
           grid.priceValues[ri],
@@ -671,12 +695,15 @@ export default function CropBudgetReport({ onPayloadChange, headerActions }: Pro
     }
     return {
       title: 'Crop Budget Planner',
-      filters: [
-        `Budget crop year: ${year}`,
-        `View: ${viewLabel}`,
-        quoteDate ? `Futures quotes as of ${quoteDate}` : 'No live quotes',
+      // The report header's line first (year · cell value), then what a reader
+      // away from the screen needs: the view, the quote date, what is left out.
+      filters: filterSummaryOf(
+        `${year} Budget`,
+        cellLabel,
+        showBreakoutToggle ? viewLabel : null,
+        quoteDate ? `Futures quotes as of ${fmtDate(quoteDate) || quoteDate}` : 'No live quotes',
         'Pre-season budget — no contracts, insurance, or government payments',
-      ].join(' · '),
+      ),
       summary: [
         { label: 'Total acres', value: acres0(totals.totalAcres) },
         { label: 'Weighted profit/acre', value: fmtUsd(totals.weightedProfitPerAcre, 2), tone: totals.weightedProfitPerAcre != null ? signedTone(totals.weightedProfitPerAcre) : undefined },

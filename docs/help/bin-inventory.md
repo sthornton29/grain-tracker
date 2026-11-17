@@ -1,7 +1,7 @@
 ---
 page_route: /inventory
 title: Bin Inventory
-updated: 2026-09-24
+updated: 2026-11-17
 keywords: bins, inventory, bushels on hand, sites, beginning inventory, empty bin, cleanout, storage, capacity, percent full, transfer, wet bin, dry bin, drying, from loads, export, csv, spreadsheet
 ---
 ## What this page is for
@@ -17,7 +17,7 @@ Bin Inventory shows the dry bushels sitting in each bin right now, grouped by bi
 - **Transfer grain** records grain moved from one bin to another — for example, out of a wet bin into a dry bin after drying. Pick the from bin, to bin, crop, and date, then either type the bushels or estimate them from run time.
 - When you first start with Turnrow and a bin already has grain in it from before your load records begin, tap **Beginning inventory** on that bin and enter the dry bushels (with an as-of date and a note). That grain then counts until the bin is next emptied.
 - When a bin is cleaned out, tap **Empty bin**. Turnrow shows you what it thinks is in the bin — the bushels of each crop — and asks you to confirm before it records a cleanout that zeroes the bin. That keeps small leftovers from shrink and scale drift from accumulating year over year.
-- **Export** — Excel, PDF, CSV, or Print — downloads the current view, including each bin's capacity and percent full.
+- **Export** — Excel, PDF, CSV, or Print — downloads the current view: each bin under its bin site (with a subtotal per site when you have more than one), its capacity and percent full, the bushels on hand per crop, and the filters you had set.
 
 ## Transferring grain between bins
 

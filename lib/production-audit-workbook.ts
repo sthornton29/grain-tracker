@@ -1,17 +1,28 @@
-// Crop Insurance Production Report — the AUDIT WORKBOOK (Excel export).
+// Crop Insurance Production Report — the Excel workbook.
 //
-// Builds an ExportPayload whose summary numbers are LIVE FORMULAS tracing back
-// to the loads: Load Data (one row per counted load portion) → Field
-// Production (one row per planting × practice, SUMIFS over Load Data by Farm +
-// Field + Crop + Crop Year, plus Practice where the load tag decides it) →
-// Summary (SUMIFS over Field Production by county / state / crop / practice).
-// An auditor can click any Summary cell, follow the SUMIFS to the field row,
-// then to the exact loads, and change a load to watch the totals move. Every
-// rule the engine (lib/production-report.ts) applies is written here as a
-// formula; where a rule is really an input (a manual override, an entered
-// breakout, a combine entry) the input is a BLUE cell and the formula around
-// it stays black. The on-screen report and the PDF are untouched — this is
-// the Excel button only.
+// THE REPORT FIRST, THE PROOF BEHIND IT. The workbook opens on exactly what
+// the screen shows and what an insurance agent asks for: a Summary (one line
+// per county and practice), then one sheet per county × practice listing each
+// farm with its FSA number, certified acres, production and yield. Behind
+// those sit the supporting tabs an auditor follows: Field Production (one row
+// per planting × practice), Load Data (one row per counted load portion), the
+// combine / gin / settlement sources, and Notes.
+//
+// Every number on the report sheets is a LIVE FORMULA tracing back to the
+// loads: Load Data → Field Production (SUMIFS over Load Data by Farm + Field +
+// Crop + Crop Year, plus Practice where the load tag decides it) → the county
+// sheets (SUMIFS over Field Production by farm) and the Summary (SUMIFS over
+// Field Production by county / state / crop / practice). An auditor can click
+// any cell, follow the SUMIFS to the field row, then to the exact loads, and
+// change a load to watch the totals move. Every rule the engine
+// (lib/production-report.ts) applies is written here as a formula; where a
+// rule is really an input (a manual override, an entered breakout, a combine
+// entry) the input is a BLUE cell and the formula around it stays black.
+//
+// Layout follows the shared contract (lib/exports.ts): each sheet is a title,
+// one line of context with a link back to the Summary, then the table — so
+// the frozen header is never more than a few rows and the data is on screen
+// the moment the file opens. The contents list sits UNDER the Summary table.
 //
 // No hidden keys: the SUMIFS criteria are "=" & the row's own Farm / Field /
 // Crop / Crop Year cells with Excel's wildcards escaped (lib/formula
@@ -150,6 +161,9 @@ export const AUDIT = {
   unsettled: 'unsettled_deliveries',
   notes: 'notes',
 } as const
+
+/** Section key of the i-th county × practice sheet (report.detailSheets order). */
+export const countySheetKey = (i: number): string => `county_${i}`
 
 export const ESTIMATED_KIND = 'estimated, not ginned'
 export const GINNED_KIND = 'ginned'
@@ -360,6 +374,20 @@ export function buildProductionAuditPayload(input0: ProductionAuditInput): Expor
   }
   const hasCotton = ginRows.length > 0
   const hasBales = baleRows.length > 0
+  // The receipt as the gin numbers it — the text the Bales tab matches on. A
+  // number that repeats (two gins, a reissued statement) is told apart "(2)".
+  const receiptLabel = new Map<string, string>()
+  {
+    const taken = new Set<string>()
+    for (const g of ginRows) {
+      if (!g.receipt || receiptLabel.has(g.receipt.id)) continue
+      const base = criteriaText(g.receipt.statement_number || g.receipt.receipt_number || 'receipt')
+      let label = base
+      for (let n = 2; taken.has(label.toLowerCase()); n++) label = `${base} (${n})`
+      taken.add(label.toLowerCase())
+      receiptLabel.set(g.receipt.id, label)
+    }
+  }
   const hasCombine = combineRows.length > 0
 
   // =========================================================================
@@ -377,7 +405,17 @@ export function buildProductionAuditPayload(input0: ProductionAuditInput): Expor
   const grainCrops = crops.filter((c) => unitOf(c) === 'bu')
   const fmtOf = (c: Crop, grain: NumFmt): NumFmt => (unitOf(c) === 'lbs' ? 'lbs' : grain)
   const loadLink = (id: string): string | undefined => (input0.appOrigin ? `${input0.appOrigin}/loads/${id}` : undefined)
-  const backLink: PreludeRow = { kind: 'text', cells: [{ v: '← Back to Summary', link: "#'Summary'!A1" }] }
+  // Every supporting sheet opens the same way: its title, then ONE line — a
+  // link back to the Summary and, starting at the first column that scrolls, a
+  // sentence saying what the sheet is. Two rows above the header, no more.
+  const sheetHead = (title: string, about: string, textCol: number): PreludeRow[] => [
+    { kind: 'title', cells: [title] },
+    { kind: 'text', cells: [{ v: '← Summary', link: "#'Summary'!A1" }, ...Array<ExportCell>(Math.max(0, textCol - 1)).fill(null), about] },
+  ]
+  const openLoad = (id: string): ExportCell => {
+    const link = loadLink(id)
+    return link ? { v: 'Open', link } : ''
+  }
 
   // Identity criteria: this row's own Farm / Field / Crop / Crop Year against
   // Load Data's columns — exact, wildcard-escaped.
@@ -429,11 +467,10 @@ export function buildProductionAuditPayload(input0: ProductionAuditInput): Expor
     title: 'Settlement Balance',
     plain: true,
     tabColor: undefined,
-    prelude: [
-      { kind: 'title', cells: ['Settlement Balance'] },
-      { kind: 'text', cells: ['Production balanced so the bushels the buyers paid for match the production records: balanced total = settled + delivered not settled + still in bins; factor = balanced ÷ measured; every field\'s balanced production = measured × factor (crop-wide, all entities).'] },
-      backLink,
-    ],
+    autoFilter: false,
+    banded: false,
+    freezeColumns: 0,
+    prelude: sheetHead('Settlement Balance', 'Balanced total = settled + delivered not settled + still in bins. Factor = balanced ÷ measured, applied to every field of the crop.', 1),
     columns: colsOf([
       { key: 'item', label: 'Item', width: 44 },
       { key: 'value', label: 'Value', align: 'right', width: 16, note: 'Bushels, or the factor. Blue = taken from Turnrow records (the bin book figure); black = formula.' },
@@ -476,7 +513,7 @@ export function buildProductionAuditPayload(input0: ProductionAuditInput): Expor
       { key: 'balanced_yield', label: 'Balanced yield (bu/ac)', format: 'yield' as NumFmt, align: 'right' as const, note: 'Balanced production ÷ acres.' },
     ] : []),
     { key: 'check', label: 'Check', kind: 'check', note: 'For a mixed planting: OK when the entered (or tagged) irrigated + dryland bushels equal the field total within half a bushel.' },
-    { key: 'rule', label: 'Rule', width: 60, note: 'The rule applied to this row, in words.' },
+    { key: 'rule', label: 'Rule', width: 60, wrap: false, note: 'The rule applied to this row, in words.' },
   ])
   type FpRow = { r: Resolved; practice: Practice }
   const fpRows: FpRow[] = []
@@ -494,11 +531,7 @@ export function buildProductionAuditPayload(input0: ProductionAuditInput): Expor
     title: 'Field Production',
     plain: true,
     freezeColumns: 2,
-    prelude: [
-      { kind: 'title', cells: ['Field Production'] },
-      { kind: 'text', cells: ['One row per planting and practice. Scale ticket bu is a SUMIFS over Load Data by Farm + Field + Crop + Crop Year; the Rule column says how production was split between practices.'] },
-      backLink,
-    ],
+    prelude: sheetHead('Field Production', 'One row per field and practice. Click a field name to see its loads; the Rule column says how its production was worked out.', 2),
     columns: fpColumns,
     rows: fpRows.map(({ r, practice }) => {
       const crop = cropById.get(r.planting.crop_id)
@@ -596,12 +629,12 @@ export function buildProductionAuditPayload(input0: ProductionAuditInput): Expor
     { key: 'county', label: 'County' },
     { key: 'state', label: 'State' },
     { key: 'practice', label: 'Practice' },
-    ...crops.map((c) => ({ key: `acres:${c.id}`, label: `${c.name} (ac)`, format: 'acres2' as NumFmt, align: 'right' as const, note: `SUMIFS over Field Production acres for ${c.name}, this county, state and practice.` })),
+    ...crops.map((c) => ({ key: `acres:${c.id}`, label: c.name, format: 'acres2' as NumFmt, align: 'right' as const, note: `SUMIFS over Field Production acres for ${c.name}, this county, state and practice.` })),
     ...crops.map((c) => ({ key: `prod:${c.id}`, label: `${c.name} (${unitOf(c)})`, format: fmtOf(c, 'bu'), align: 'right' as const, note: balance && unitOf(c) === 'bu' ? `SUMIFS over Field Production balanced production for ${c.name} (measured × the settlement factor).` : `SUMIFS over Field Production measured production for ${c.name}.` })),
     ...crops.map((c) => ({ key: `yield:${c.id}`, label: `${c.name} (${unitOf(c)}/ac)`, format: 'yield' as NumFmt, align: 'right' as const, note: 'Production ÷ acres; the Total row divides total production by total acres.' })),
     ...(balance ? [
-      ...crops.map((c) => ({ key: `mprod:${c.id}`, label: `${c.name} measured (${unitOf(c)})`, format: fmtOf(c, 'bu'), align: 'right' as const, note: `SUMIFS over Field Production measured production for ${c.name} — scale tickets, before the settlement balance.` })),
-      ...crops.map((c) => ({ key: `myield:${c.id}`, label: `${c.name} measured (${unitOf(c)}/ac)`, format: 'yield' as NumFmt, align: 'right' as const, note: 'Measured production ÷ acres.' })),
+      ...crops.map((c) => ({ key: `mprod:${c.id}`, label: `${c.name} (${unitOf(c)})`, format: fmtOf(c, 'bu'), align: 'right' as const, note: `SUMIFS over Field Production measured production for ${c.name} — scale tickets, before the settlement balance.` })),
+      ...crops.map((c) => ({ key: `myield:${c.id}`, label: `${c.name} (${unitOf(c)}/ac)`, format: 'yield' as NumFmt, align: 'right' as const, note: 'Measured production ÷ acres.' })),
     ] : []),
   ])
   const summaryRows: ExportCell[][] = report.summaryRows.map((row) => {
@@ -635,47 +668,114 @@ export function buildProductionAuditPayload(input0: ProductionAuditInput): Expor
   ]
   const totalIdx = n
   const basisLabel = balance ? 'Balanced to settlements' : 'Measured (scale tickets)'
-  // One KPI per row (label in the wide first column, the value beside it), so
-  // nothing truncates whatever the table's column widths are.
-  const kpiRows: PreludeRow[] = crops.flatMap((c) => [
-    { kind: 'kpi' as const, cells: [`${c.name} certified acres`, formula(cell(S.summary, `acres:${c.id}`, totalIdx), 'acres2')] },
-    { kind: 'kpi' as const, cells: [`${c.name} production (${unitOf(c)})`, formula(cell(S.summary, `prod:${c.id}`, totalIdx), fmtOf(c, 'bu'))] },
-    { kind: 'kpi' as const, cells: [`${c.name} yield (${unitOf(c)}/ac)`, formula(cell(S.summary, `yield:${c.id}`, totalIdx), 'yield')] },
-    ...(balance && factorRowByCrop.has(c.id) ? [{ kind: 'kpi' as const, cells: [`${c.name} settlement factor`, formula(cell(S.balance, 'value', factorRowByCrop.get(c.id)!), 'factor')] }] : []),
-  ])
+  const generated = input0.generatedAt
+  const generatedText = `${generated.getMonth() + 1}/${generated.getDate()}/${generated.getFullYear()}`
+  /** The one line of context every report sheet carries under its title. */
+  const contextLine = `${input0.orgName} · ${cropYear} crop · ${input0.entityName || 'All entities'} · ${input0.cropFilterLabel} · ${basisLabel} · Generated ${generatedText}`
+  // The Summary opens on its table: title, one line of context, the header.
+  // What used to sit above it (a KPI per crop, the contents list) pushed the
+  // table below the fold and froze there; the totals ARE the Total row, and
+  // the contents list now follows the table (filled in below, once the sheet
+  // names are known).
   const summarySection: ExportSection = {
     key: S.summary,
     title: 'Summary',
     plain: true,
     tabColor: BRAND_GREEN,
     freezeColumns: 3,
+    autoFilter: false,
     prelude: [
-      { kind: 'title', cells: [input0.orgName] },
-      { kind: 'subtitle', cells: ['Crop Insurance Production Report'] },
-      { kind: 'text', cells: [`Crop year ${cropYear} · ${input0.cropFilterLabel} · ${input0.entityName || 'All entities'} · Production basis: ${basisLabel} · Generated ${input0.generatedAt.toLocaleString()}`] },
-      ...kpiRows,
-      { kind: 'text', cells: ['Contents'] },
-      { kind: 'links', cells: [] }, // one link row per tab — filled once the sheet names are known
-      { kind: 'blank', cells: [] },
+      { kind: 'title', cells: [`${cropYear} Crop Insurance Production Report`] },
+      { kind: 'text', cells: [contextLine] },
     ],
     columns: sumCols,
     groups: crops.length > 0 ? [
       { label: '', span: 3 },
       { label: 'Certified Acres', span: crops.length },
-      { label: balance ? 'Balanced production' : 'Production (Bu. Or Lbs.)', span: crops.length },
-      { label: balance ? 'Balanced yield/acre' : 'Yield/Acre (Bu. Or Lbs.)', span: crops.length },
-      ...(balance ? [{ label: 'Measured production', span: crops.length }, { label: 'Measured yield/acre', span: crops.length }] : []),
+      { label: balance ? 'Balanced Production' : 'Production', span: crops.length },
+      { label: balance ? 'Balanced Yield per Acre' : 'Yield per Acre', span: crops.length },
+      ...(balance ? [{ label: 'Measured Production', span: crops.length }, { label: 'Measured Yield per Acre', span: crops.length }] : []),
     ] : undefined,
     rows: [...summaryRows, totalRow],
     rowMeta: [...report.summaryRows.map(() => 'data' as const), 'total'],
   }
 
+  // --- County × practice sheets -------------------------------------------------
+  // The pages the screen shows and an insurance agent files by: one sheet per
+  // county and practice, a row per farm with its FSA number, and certified
+  // acres / production / yield for each crop grown there. Every figure is a
+  // SUMIFS over Field Production for the farm (so it ties to the Summary and
+  // traces to the loads). Farms are matched by NAME, as Field Production
+  // lists them: two farm records that share a name in one county are one row
+  // here, their FSA numbers listed together.
+  const countySections: ExportSection[] = report.detailSheets.map((sheet, si) => {
+    const pLabel = practiceLabel(sheet.practice)
+    const countyLabel = criteriaText(sheet.countyLabel)
+    const state = sheet.county?.state_code ? criteriaText(sheet.county.state_code) : NO_STATE
+    const sheetFarms = [...sheet.farms.values()]
+    // Only the crops grown on this sheet, as on screen — a county page stays narrow.
+    const sheetCrops = crops.filter((c) => sheetFarms.some((f) => (f.byCrop.get(c.id)?.acres ?? 0) > 0))
+    const byName = new Map<string, { name: string; fsa: string[] }>()
+    for (const f of sheetFarms) {
+      const name = criteriaText(f.farmName)
+      const entry = byName.get(name.toLowerCase()) ?? { name, fsa: [] }
+      if (f.fsaNumber && !entry.fsa.includes(f.fsaNumber)) entry.fsa.push(f.fsaNumber)
+      byName.set(name.toLowerCase(), entry)
+    }
+    const farmRows = [...byName.values()].sort((a, b) => a.name.localeCompare(b.name))
+    const m = farmRows.length
+    const key = countySheetKey(si)
+    const crit = (c: Crop): Array<[RangeNode, FormulaNode]> => [
+      [FP('farm'), exactCriterion(self('farm'))], [FP('county'), literalCriterion(countyLabel)], [FP('state'), literalCriterion(state)],
+      [FP('crop'), literalCriterion(criteriaText(c.name))], [FP('practice'), literalCriterion(pLabel)],
+    ]
+    const prodOf = (c: Crop) => (unitOf(c) === 'bu' ? prodCol : 'production')
+    return {
+      key,
+      title: sheet.sheetName,
+      plain: true,
+      tabColor: BRAND_GREEN,
+      freezeColumns: 2,
+      autoFilter: false,
+      prelude: sheetHead(`${countyLabel} — ${pLabel}`, contextLine, 2),
+      columns: colsOf([
+        { key: 'farm', label: 'Farm', note: 'The farm, as Field Production lists it.' },
+        { key: 'fsa', label: 'FSA farm #' },
+        ...sheetCrops.map((c) => ({ key: `acres:${c.id}`, label: c.name, format: 'acres2' as NumFmt, align: 'right' as const })),
+        ...sheetCrops.map((c) => ({ key: `prod:${c.id}`, label: `${c.name} (${unitOf(c)})`, format: fmtOf(c, 'bu'), align: 'right' as const })),
+        ...sheetCrops.map((c) => ({ key: `yield:${c.id}`, label: `${c.name} (${unitOf(c)}/ac)`, format: 'yield' as NumFmt, align: 'right' as const })),
+      ]),
+      groups: sheetCrops.length > 0 ? [
+        { label: '', span: 2 },
+        { label: `Certified ${pLabel} Acres`, span: sheetCrops.length },
+        { label: `${balance ? 'Balanced ' : ''}${pLabel} Production`, span: sheetCrops.length },
+        { label: 'Yield per Acre', span: sheetCrops.length },
+      ] : undefined,
+      rows: [
+        ...farmRows.map((f): ExportCell[] => [
+          f.name,
+          f.fsa.join(', '),
+          ...sheetCrops.map((c) => formula(sumifs(FP('acres'), ...crit(c)), 'acres2')),
+          ...sheetCrops.map((c) => formula(sumifs(FP(prodOf(c)), ...crit(c)), fmtOf(c, 'bu'))),
+          ...sheetCrops.map((c) => formula(iferror(div(self(`prod:${c.id}`), self(`acres:${c.id}`)), num(0)), 'yield')),
+        ]),
+        [
+          'Total', '',
+          ...sheetCrops.map((c) => formula(m > 0 ? sum(rowsRange(key, `acres:${c.id}`, 0, m - 1)) : num(0), 'acres2')),
+          ...sheetCrops.map((c) => formula(m > 0 ? sum(rowsRange(key, `prod:${c.id}`, 0, m - 1)) : num(0), fmtOf(c, 'bu'))),
+          ...sheetCrops.map((c) => formula(iferror(div(self(`prod:${c.id}`), self(`acres:${c.id}`)), num(0)), 'yield')),
+        ],
+      ],
+      rowMeta: [...farmRows.map(() => 'data' as const), 'total'],
+    }
+  })
+
   // --- Load Data ---------------------------------------------------------------
   const ldColumns = colsOf([
-    { key: 'date', label: 'Date', format: 'text', note: 'The load\'s date as entered.' },
+    { key: 'date', label: 'Date', format: 'date', note: 'The load\'s date as entered.' },
     { key: 'ticket', label: 'Our ticket #', note: 'The scale ticket number as entered on the load.' },
     { key: 'buyer_ticket', label: 'Buyer ticket #', note: 'The buyer\'s ticket number as printed on the matched settlement, when matched.' },
-    { key: 'load', label: 'Load', width: 14, note: 'The load\'s id; a link to the load in Turnrow.' },
+    { key: 'load', label: 'Load record', note: 'Opens the load in Turnrow.' },
     { key: 'truck', label: 'Truck' },
     { key: 'farm', label: 'Farm', note: 'Field Production matches on this text.' },
     { key: 'field', label: 'Field', note: 'Field Production matches on this text (disambiguated the same way).' },
@@ -706,11 +806,7 @@ export function buildProductionAuditPayload(input0: ProductionAuditInput): Expor
     title: 'Load Data',
     plain: true,
     freezeColumns: 2,
-    prelude: [
-      { kind: 'title', cells: ['Load Data'] },
-      { kind: 'text', cells: ['One row per load that counts; a split load has one row per field share. Loads hauled out of a bin are not listed: production is counted when grain leaves the field.'] },
-      backLink,
-    ],
+    prelude: sheetHead('Load Data', 'One row per load that counts; a split load has one row per field share. Production is counted when grain leaves the field, so loads hauled out of a bin are not listed.', 2),
     columns: ldColumns,
     rows: loadRows.map(({ portion: po, resolved: r, dryBu, overridden, noBase }) => {
       const l = po.load
@@ -728,12 +824,11 @@ export function buildProductionAuditPayload(input0: ProductionAuditInput): Expor
         : po.split ? (noBase ? 'split portion: dry bu rounded to 2 decimals as stored; crop has no base moisture, no shrink' : 'split portion: dry bu rounded to 2 decimals as stored')
         : noBase ? 'crop has no base moisture: no shrink'
         : ''
-      const link = loadLink(l.id)
       return [
         l.date,
         text(l.ticket_number),
         text(l.buyer_ticket_number ?? line?.buyer_ticket_number),
-        link ? { v: l.id, link } : l.id,
+        openLoad(l.id),
         truckExportLabel({ truck_label: l.truck_label, truck: l.truck_id ? { name_or_number: truckById.get(l.truck_id) ?? '' } : null, hauler_truck: l.hauler_truck }),
         place.farmName,
         displayField(r.planting),
@@ -768,8 +863,7 @@ export function buildProductionAuditPayload(input0: ProductionAuditInput): Expor
     title: 'Combine Entries',
     plain: true,
     freezeColumns: 2,
-    prelude: [{ kind: 'title', cells: ['Combine Entries'] }, backLink],
-    note: 'No scale ticket. Bushels from the combine yield monitor.',
+    prelude: sheetHead('Combine Entries', 'No scale ticket: bushels from the combine yield monitor. The adjusted figure is the field\'s production.', 2),
     columns: colsOf([
       { key: 'farm', label: 'Farm' },
       { key: 'field', label: 'Field' },
@@ -777,7 +871,7 @@ export function buildProductionAuditPayload(input0: ProductionAuditInput): Expor
       { key: 'state', label: 'State' },
       { key: 'crop', label: 'Crop' },
       { key: 'crop_year', label: 'Crop year', format: 'text' },
-      { key: 'date', label: 'Entry date', format: 'text' },
+      { key: 'date', label: 'Entry date', format: 'date' },
       { key: 'stated_bu', label: 'Monitor bushels (stated)', format: 'bu2', align: 'right', note: 'What the yield monitor said (blue input).' },
       { key: 'adjust', label: 'Calibration adj. (bu/ac)', format: 'dec1', align: 'right', note: 'The ± bu/ac calibration offset entered with the figure.' },
       { key: 'adjusted_bu', label: 'Adjusted bushels (used)', format: 'bu2', align: 'right', note: 'Stated + adjustment × acres, as stored — the field\'s production (blue input).' },
@@ -813,14 +907,12 @@ export function buildProductionAuditPayload(input0: ProductionAuditInput): Expor
     title: 'Gin Receipts',
     plain: true,
     freezeColumns: 2,
-    prelude: [{ kind: 'title', cells: ['Gin Receipts'] }, backLink],
-    note: `Lint lbs per receipt: the bale rows' weights when the bales are listed, else the receipt's stated bale weight. Rows marked "${ESTIMATED_KIND}" are seed cotton picked but not yet ginned, valued at the resolved turnout.`,
+    prelude: sheetHead('Gin Receipts', `Lint per receipt: the bale weights when the bales are listed, else the receipt's stated bale weight. "${ESTIMATED_KIND}" rows are seed cotton picked but not yet ginned, valued at the turnout.`, 2),
     columns: colsOf([
       { key: 'kind', label: 'Kind', note: '"ginned" (a receipt) or "estimated, not ginned" (seed cotton still on the yard).' },
-      { key: 'receipt', label: 'Receipt / statement #' },
-      { key: 'receipt_id', label: 'Receipt id', width: 38 },
+      { key: 'receipt', label: 'Receipt / statement #', note: 'The gin\'s receipt or statement number (a repeated number is told apart with "(2)"). The Bales tab matches on this text.' },
       { key: 'gin', label: 'Gin' },
-      { key: 'date', label: 'Date', format: 'text' },
+      { key: 'date', label: 'Date', format: 'date' },
       { key: 'farm', label: 'Farm' },
       { key: 'field', label: 'Field' },
       { key: 'county', label: 'County' },
@@ -844,10 +936,10 @@ export function buildProductionAuditPayload(input0: ProductionAuditInput): Expor
       if (g.receipt) {
         const rc = g.receipt
         const balesHere = baleRows.filter((b) => b.receipt.id === rc.id)
-        const baleLbs = hasBales ? formula(sumifs(BL('net_lbs'), [BL('receipt_id'), exactCriterion(self('receipt_id'))]), 'lbs') : ''
+        const baleLbs = hasBales ? formula(sumifs(BL('net_lbs'), [BL('receipt'), exactCriterion(self('receipt'))]), 'lbs') : ''
         const lint = hasBales ? formula(iff(gt(self('bale_lbs'), num(0)), self('bale_lbs'), self('stated_lint')), 'lbs') : formula(self('stated_lint'), 'lbs')
         return [
-          GINNED_KIND, rc.statement_number || rc.receipt_number, rc.id, ginById.get(rc.gin_id ?? '') ?? '', rc.receipt_date ?? '',
+          GINNED_KIND, receiptLabel.get(rc.id) ?? '', ginById.get(rc.gin_id ?? '') ?? '', rc.receipt_date ?? '',
           ...common,
           input(rc.modules_count ?? null, 'int'),
           input(rc.total_seed_cotton_weight == null ? null : Number(rc.total_seed_cotton_weight), 'lbs'),
@@ -861,7 +953,7 @@ export function buildProductionAuditPayload(input0: ProductionAuditInput): Expor
       }
       const est = g.est!
       return [
-        ESTIMATED_KIND, '(estimate)', '', '', '',
+        ESTIMATED_KIND, '(estimate)', '', '',
         ...common,
         '', input(est.seedLbs, 'lbs'), '', '', '',
         input(est.turnoutPct, 'pct1'),
@@ -875,15 +967,14 @@ export function buildProductionAuditPayload(input0: ProductionAuditInput): Expor
     key: S.bales,
     title: 'Bales',
     plain: true,
-    prelude: [{ kind: 'title', cells: ['Bales'] }, backLink],
+    prelude: sheetHead('Bales', 'The bale weights behind each gin receipt.', 1),
     columns: colsOf([
       { key: 'pbi', label: 'PBI' },
       { key: 'receipt', label: 'Receipt / statement #' },
-      { key: 'receipt_id', label: 'Receipt id', width: 38 },
       { key: 'net_lbs', label: 'Net (lb)', format: 'lbs', align: 'right' },
     ]),
     rows: baleRows.map(({ bale, receipt }) => [
-      bale.pbi_number, receipt.statement_number || receipt.receipt_number, receipt.id,
+      bale.pbi_number, receiptLabel.get(receipt.id) ?? '',
       input(bale.net_weight_lbs == null ? null : Number(bale.net_weight_lbs), 'lbs'),
     ]),
   } : null
@@ -896,30 +987,25 @@ export function buildProductionAuditPayload(input0: ProductionAuditInput): Expor
     title: 'Settlements',
     plain: true,
     freezeColumns: 2,
-    prelude: [
-      { kind: 'title', cells: ['Settlements'] },
-      { kind: 'text', cells: ['Every settlement line counted for the crop year, through the load it was matched to (field-direct and bin-out loads alike; each line once). Lines not matched to a load have no crop and are not listed; the report screen names them.'] },
-      backLink,
-    ],
+    prelude: sheetHead('Settlements', 'Every settlement line counted for the crop year, through the load it was matched to (each line once). Lines not matched to a load are not listed; the report screen names them.', 2),
     columns: colsOf([
       { key: 'settlement', label: 'Settlement #' },
-      { key: 'date', label: 'Settlement date', format: 'text' },
+      { key: 'date', label: 'Settlement date', format: 'date' },
       { key: 'buyer', label: 'Buyer' },
       { key: 'ticket', label: 'Ticket', note: 'The buyer\'s ticket on the line, else ours.' },
-      { key: 'load', label: 'Load', width: 14 },
+      { key: 'load', label: 'Load record' },
       { key: 'source', label: 'Load source', note: 'The field the load came from, or the bin it was hauled out of.' },
       { key: 'crop', label: 'Crop' },
       { key: 'crop_year', label: 'Crop year', format: 'text' },
       { key: 'net_bu', label: 'Buyer net bu', format: 'bu2', align: 'right', note: 'The buyer\'s net bushels on the line (blue input) — the bushels paid for.' },
     ]),
     rows: grainCrops.flatMap((c) => (balance.byCrop.get(c.id)?.settledLines ?? []).map((x) => {
-      const link = loadLink(x.load.id)
       return [
         text(x.settlement?.settlement_number),
         x.settlement?.settlement_date ?? '',
         buyerById.get(x.settlement?.buyer_id ?? '') ?? '',
         x.line.ticket_number || (x.load as AuditLoadRow).buyer_ticket_number || x.load.ticket_number || '',
-        link ? { v: x.load.id, link } : x.load.id,
+        openLoad(x.load.id),
         sourceOf(x.load),
         criteriaText(c.name),
         x.load.crop_year ?? '',
@@ -932,53 +1018,52 @@ export function buildProductionAuditPayload(input0: ProductionAuditInput): Expor
     title: 'Unsettled Deliveries',
     plain: true,
     freezeColumns: 2,
-    prelude: [
-      { kind: 'title', cells: ['Unsettled Deliveries'] },
-      { kind: 'text', cells: ['Loads delivered to a buyer with no settlement line yet (price-later deliveries included). The balance changes as settlements arrive.'] },
-      backLink,
-    ],
+    prelude: sheetHead('Unsettled Deliveries', 'Loads delivered to a buyer with no settlement line yet (price-later deliveries included). The balance changes as settlements arrive.', 2),
     columns: colsOf([
-      { key: 'date', label: 'Date', format: 'text' },
+      { key: 'date', label: 'Date', format: 'date' },
       { key: 'ticket', label: 'Our ticket #' },
       { key: 'buyer', label: 'Buyer' },
-      { key: 'load', label: 'Load', width: 14 },
+      { key: 'load', label: 'Load record' },
       { key: 'source', label: 'Load source' },
       { key: 'crop', label: 'Crop' },
       { key: 'crop_year', label: 'Crop year', format: 'text' },
       { key: 'dry_bu', label: 'Dry bu', format: 'bu2', align: 'right', note: 'Our dry bushels for the load (blue input) — the app\'s own figure.' },
     ]),
     rows: grainCrops.flatMap((c) => (balance.byCrop.get(c.id)?.unsettledLoads ?? []).map((x) => {
-      const link = loadLink(x.load.id)
       return [
         x.load.date, text(x.load.ticket_number), buyerById.get(x.load.to_buyer_id ?? '') ?? '',
-        link ? { v: x.load.id, link } : x.load.id, sourceOf(x.load), criteriaText(c.name), x.load.crop_year ?? '',
+        openLoad(x.load.id), sourceOf(x.load), criteriaText(c.name), x.load.crop_year ?? '',
         input(x.dryBu, 'bu2'),
       ]
     })),
   } : null
 
   // --- Notes -----------------------------------------------------------------
+  // A page to READ: headings, wrapped paragraphs, no filter buttons or banding.
   const notesRows: ExportCell[][] = []
-  const line = (item: string, value: ExportCell = '', check: ExportCell = '') => { notesRows.push([item, value, check]) }
-  line('How this workbook is built')
+  const notesMeta: Array<'data' | 'subhead'> = []
+  const line = (item: string, value: ExportCell = '', check: ExportCell = '') => { notesRows.push([item, value, check]); notesMeta.push('data') }
+  const heading = (label: string) => { notesRows.push([label, '', '']); notesMeta.push('subhead') }
+  heading('How this workbook is built')
+  line('The Summary and the county sheets are the report: certified acres, production and yield by county and practice, then farm by farm. The tabs after them are the records behind those numbers.')
   line('Load Data lists every load portion that counts: one row per load, or one row per field share of a split load. Net lbs applied = net lbs × split %.')
   line('Field Production has one row per planting and practice. Its Scale ticket bu is a SUMIFS over Load Data matching the row\'s own Farm, Field, Crop and Crop Year (and Practice where the load tags decide the split); its production applies the practice rule in the Rule column.')
-  line('Summary sums Field Production by county, state, crop and practice with SUMIFS. Yield per acre is production ÷ acres; the Total row sums the rows above and its yield is total production ÷ total acres, never an average of yields.')
-  line('To trace a number: click a Summary cell, read its SUMIFS, find the matching rows on Field Production, then click the field name (or match Farm + Field + Crop + Crop Year) on Load Data. Change a load\'s net lbs or moisture and every total above it recalculates.')
+  line('Summary sums Field Production by county, state, crop and practice with SUMIFS; each county sheet sums it by farm. Yield per acre is production ÷ acres; the Total row sums the rows above and its yield is total production ÷ total acres, never an average of yields.')
+  line('To trace a number: click a Summary or county-sheet cell, read its SUMIFS, find the matching rows on Field Production, then click the field name (or match Farm + Field + Crop + Crop Year) on Load Data. Change a load\'s net lbs or moisture and every total above it recalculates.')
   line('Matching text: every SUMIFS criterion is "=" & the row\'s own cell with Excel\'s wildcard characters (* ? ~) escaped, so a field named "Pivot*" or "<40" matches only itself.')
   if (names.renamed.length > 0) {
     line('Two plantings would have read the same (same farm, field, crop and crop year), so the field name is disambiguated identically on every tab:')
     for (const r of names.renamed) line(`  ${r}`)
   }
   line('')
-  line('Shrink (dry bushels), exactly as Turnrow computes each load')
+  heading('Shrink (dry bushels), exactly as Turnrow computes each load')
   line('Wet bu = net lbs applied ÷ lb per bushel. If moisture is at or below the crop\'s base moisture (or no moisture was recorded) dry bu = wet bu. Otherwise dry bu = wet bu × (100 − moisture) ÷ (100 − base moisture).')
   line('Excel: =IF(moisture<=base, net/lb, net/lb*(100-moisture)/(100-base)). A split portion is ROUNDed to 2 decimals because that is how the app stores it; a whole load is not rounded.')
   line('A load with a manual dry-bushel override shows the override (blue) with the note "manual override". A parent load\'s override is not spread over its split portions.')
   line('A field with a combine-monitor entry uses the entry\'s adjusted bushels as its production; scale tickets from that field are netted inside the entry, not added to it (see Combine Entries).')
   line('')
   if (balance) {
-    line('Production basis: balanced to settlements')
+    heading('Production basis: balanced to settlements')
     line('An auditor compares reported production to the bushels the buyers paid for, and scale-ticket dry bushels never match buyer net bushels exactly (buyer shrink, FM, dockage). So, per grain crop and crop year, across every entity: settled = buyer net bushels on saved settlement lines whose matched load is this crop and year; delivered not settled = our dry bushels on loads delivered to a buyer with no settlement line yet; still in bins = the book inventory for the crop year (loads in minus loads out, plus combine remainders posted to a bin; measure bins to support farm-stored production).')
     line('Balanced total = settled + delivered not settled + still in bins. Factor = balanced ÷ measured. Every field\'s balanced production = its measured production × the factor (an entity filter still uses the crop-wide factor). When nothing is unsettled and the bins are empty, balanced production is exactly the bushels paid.')
     for (const c of grainCrops) {
@@ -990,25 +1075,26 @@ export function buildProductionAuditPayload(input0: ProductionAuditInput): Expor
     line('Balancing is a report option only: Yields, Marketing, the Claims Monitor and the partner API keep measured production. Cotton is never balanced; it already reports the gin\'s lint.')
     line('')
   }
-  line('Colors')
+  heading('Colors')
   line('Blue cells are values taken straight from Turnrow records: weights, moisture, acres, overrides, entered breakouts, combine entries, gin receipts, settlement lines. Black cells are formulas. Change a blue cell and the formulas follow.')
   line('')
-  line('What is not here')
+  heading('What is not here')
   line('Loads hauled out of a bin are not listed: production is counted when grain leaves the field, so counting a bin load as well would count the same bushels twice. Loads the report leaves out (a different calendar year than the crop year, no planting for the field, no crop year on the load) are listed on the report screen with a link to each load.')
   line('')
-  line('Column guide')
-  for (const sec of [summarySection, balanceSection, fpSection, loadDataSection, combineSection, ginSection, balesSection, settlementsSection, unsettledSection]) {
+  heading('Column guide')
+  for (const sec of [summarySection, countySections[0] ?? null, balanceSection, fpSection, loadDataSection, combineSection, ginSection, balesSection, settlementsSection, unsettledSection]) {
     if (!sec) continue
-    for (const c of sec.columns) if (c.note) line(`${sec.title} — ${c.label}: ${c.note}`)
+    const tab = sec.key?.startsWith('county_') ? 'County sheets' : sec.title
+    for (const c of sec.columns) if (c.note) line(`${tab} — ${c.label}: ${c.note}`)
   }
   line('')
-  line('This export')
+  heading('This export')
   line('Organization', input0.orgName)
   line('Filters', `${cropYear} crop · ${input0.entityName || 'All entities'} · ${input0.cropFilterLabel}`)
   line('Production basis', basisLabel)
   line('Generated', input0.generatedAt.toLocaleString())
   line('')
-  line('Reconciliation: Turnrow on-screen total vs the workbook\'s formulas', 'Value', 'Check')
+  heading('Reconciliation: Turnrow on-screen total vs the workbook\'s formulas')
   const recon: Array<{ crop: Crop; screen: number }> = crops.map((c) => ({ crop: c, screen: report.summaryTotals.get(c.id)?.bu ?? 0 }))
   for (const { crop, screen } of recon) {
     const unit = unitOf(crop)
@@ -1030,18 +1116,23 @@ export function buildProductionAuditPayload(input0: ProductionAuditInput): Expor
     title: 'Notes',
     plain: true,
     tabColor: TAB_GRAY,
-    prelude: [{ kind: 'title', cells: ['Notes'] }, backLink],
+    autoFilter: false,
+    banded: false,
+    freezeColumns: 0,
+    prelude: [{ kind: 'title', cells: ['Notes'] }, { kind: 'text', cells: [{ v: '← Summary', link: "#'Summary'!A1" }] }],
     columns: colsOf([
-      { key: 'item', label: 'How this workbook is built', width: 60 },
-      { key: 'value', label: 'Value', align: 'right', width: 22 },
+      { key: 'item', label: 'Note', width: 100 },
+      { key: 'value', label: 'Value', align: 'right', width: 24 },
       { key: 'check', label: 'Check', width: 12, kind: 'check' },
     ]),
     rows: notesRows,
+    rowMeta: notesMeta,
   }
 
-  // Tab order: Summary, Settlement Balance, Field Production, Load Data,
+  // Tab order: the report first (Summary, then each county × practice), then
+  // the records behind it — Settlement Balance, Field Production, Load Data,
   // Combine Entries / Gin Receipts / Bales, Settlements, Unsettled, Notes.
-  const sections: ExportSection[] = [summarySection]
+  const sections: ExportSection[] = [summarySection, ...countySections]
   if (balanceSection) sections.push(balanceSection)
   sections.push(fpSection, loadDataSection)
   if (combineSection) sections.push(combineSection)
@@ -1068,14 +1159,32 @@ export function buildProductionAuditPayload(input0: ProductionAuditInput): Expor
   }
 
   // Now that every section exists, resolve the sheet layout once: the
-  // Contents links on Summary, the Back links, and each Field Production
-  // row's link to its first Load Data row.
-  // The Contents block: one link row per tab (splicing rows in keeps every
-  // later row index one deeper, so the layout is resolved again afterwards).
-  const contentsIdx = summarySection.prelude!.findIndex((p) => p.kind === 'links')
-  const provisional = formulaLayout(payload)
-  summarySection.prelude!.splice(contentsIdx, 1, ...sections.map((s): PreludeRow => ({ kind: 'links', cells: [{ v: s.title ?? '', link: `#${sheetRef(provisional[s.key!].sheetName)}!A1` }] })))
+  // contents list under the Summary table and each Field Production row's
+  // link to its first Load Data row. (Rows under a table never move a
+  // header, so the layout holds once the contents are added.)
   const layout = formulaLayout(payload)
+  const about: Record<string, string> = {
+    [S.balance]: 'How production was balanced to the bushels the buyers paid for',
+    [S.fieldProduction]: 'One row per field and practice: how each field\'s production was worked out',
+    [S.loadData]: 'Every scale ticket counted, with the shrink to dry bushels',
+    [S.combine]: 'Fields measured by the combine yield monitor',
+    [S.ginReceipts]: 'Cotton lint by gin receipt',
+    [S.bales]: 'The bale weights behind the gin receipts',
+    [S.settlements]: 'The settlement lines counted in the balance',
+    [S.unsettled]: 'Loads delivered but not yet settled',
+    [S.notes]: 'How the numbers are worked out, and the check against Turnrow',
+  }
+  // A link in the first column; what the tab holds starts at the first column that scrolls.
+  const contentsRow = (s: ExportSection): PreludeRow => ({
+    kind: 'links',
+    cells: [{ v: s.title ?? '', link: `#${sheetRef(layout[s.key!].sheetName)}!A1` }, null, null, s.key?.startsWith('county_') ? 'Acres, production and yield by farm' : about[s.key ?? ''] ?? ''],
+  })
+  summarySection.postlude = [
+    { kind: 'text', cells: ['Every number above is a formula. Click a cell to see where it comes from; the tabs listed here hold the farms, fields and scale tickets behind it.'] },
+    { kind: 'blank', cells: [] },
+    { kind: 'subtitle', cells: ['In this workbook'] },
+    ...sections.filter((s) => s !== summarySection).map(contentsRow),
+  ]
   const ld = layout[S.loadData]
   const fpFieldIdx = fpColumns.findIndex((c) => c.key === 'field')
   const firstLoadRowByPlanting = new Map<string, number>()

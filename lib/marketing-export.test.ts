@@ -2,11 +2,13 @@
 // contract is its own "Spot" line, never folded into "Forward".
 
 import { describe, expect, it } from 'vitest'
+import { buildCsv, buildExcelWorkbook, formatNumber, type ExportCell } from '@/lib/exports'
 import { buildMarketingExport } from '@/lib/marketing-export'
 import { computeMarketing, type Planting } from '@/lib/marketing'
 import { buildSpotContracts, withSpotContracts, type SaleSourceLoad } from '@/lib/virtual-contracts'
 import type { LoadSale } from '@/lib/load-sales'
 import type { Contract, Crop, CropAssumption } from '@/lib/types'
+import { dumpExport } from '@/lib/export-dump'
 
 const crop: Crop = { id: 'soy', name: 'Soybean', base_moisture_pct: 13, base_lb_per_bushel: 60, harvest_category: 'fall', double_crop: false, combine_adjustment_bu_per_acre: null, rma_type_override: null }
 const assumption: CropAssumption = {
@@ -34,15 +36,67 @@ describe('buildMarketingExport — contracted by type', () => {
   const rows = computeMarketing({ cropYear: 2026, crops: [crop], plantings, contracts, futures: [], options: [], assumptions: [assumption], actualProductionByCrop: new Map(), currentFuturesByCrop: new Map([['soy', 13.0]]) })
   const payload = buildMarketingExport({ year: 2026, rows, contracts, cropMeta: new Map([['soy', false]]), segByCrop: new Map(), combined: { acres: 200, profit: null } })
   const soy = payload.sections.find((s) => s.title === 'Soybean')!
-  const kv = new Map(soy.rows.map((r) => [String(r[0]), String(r[1])]))
+  it('the finished workbook and PDF build (EXPORT_DUMP_DIR writes them out to look at)', async () => {
+    const { xlsx, pdf } = await dumpExport('marketing-dashboard', payload)
+    expect(xlsx.byteLength).toBeGreaterThan(1000)
+    expect(pdf!.byteLength).toBeGreaterThan(1000)
+  })
+  // Item | Quantity | Unit | Price / amount — the quantity is a real number
+  // carrying its own format, the unit sits in its own cell.
+  const cellOf = (c: ExportCell | undefined) => (c != null && typeof c === 'object' ? c : { v: c ?? null, format: undefined })
+  const line = (item: string) => {
+    const row = soy.rows.find((r) => cellOf(r[0]).v === item)
+    if (!row) throw new Error(`no "${item}" line`)
+    const q = cellOf(row[1])
+    return { qty: q.v, shown: typeof q.v === 'number' ? formatNumber(q.v, q.format) : null, unit: row[2], amount: cellOf(row[3]).v }
+  }
 
   it('lists "Spot" (4,794 bu) beside "Forward" (2,060 bu) under Sales, and Contracted is their sum', () => {
-    expect(kv.get('Spot')).toBe('4,794 bu')
-    expect(kv.get('Forward')).toBe('2,060 bu')
-    expect(kv.get('Contracted')).toBe('6,854 bu')
+    expect(line('Spot')).toMatchObject({ shown: '4,794', unit: 'bu' })
+    expect(line('Forward')).toMatchObject({ shown: '2,060', unit: 'bu' })
+    expect(line('Contracted')).toMatchObject({ shown: '6,854', unit: 'bu' })
+    expect(Number(line('Spot').qty) + Number(line('Forward').qty)).toBeCloseTo(Number(line('Contracted').qty), 6)
   })
 
   it('the spot line never counts under Forward', () => {
-    expect(kv.get('Forward')).not.toContain('6,854')
+    expect(Number(line('Forward').qty)).toBeCloseTo(2059.757, 3)
+  })
+
+  it('every figure is a number with a format — no "6,854 bu" or "$12.71" strings in a numeric cell', () => {
+    for (const section of payload.sections) {
+      section.rows.forEach((row, ri) => {
+        if (section.rowMeta?.[ri] === 'subhead') return
+        for (const ci of [1, 3]) {
+          const c = cellOf(row[ci])
+          if (c.v == null) continue
+          expect(typeof c.v, `${section.title} · ${String(cellOf(row[0]).v)}`).toBe('number')
+          expect(c.format, `${section.title} · ${String(cellOf(row[0]).v)}`).toBeTruthy()
+        }
+      })
+      expect(section.rowMeta).toHaveLength(section.rows.length)
+    }
+  })
+
+  it('opens as one sheet of stacked crop tables, the figures real numbers in Excel', async () => {
+    const wb = await buildExcelWorkbook(payload)
+    expect(wb.worksheets.map((w: { name: string }) => w.name)).toEqual(['Marketing Dashboard'])
+    const ws = wb.worksheets[0]
+    let contracted: { qty: unknown; fmt: unknown; unit: unknown } | null = null
+    ws.eachRow((row: { getCell: (n: number) => { value: unknown; numFmt?: string } }) => {
+      if (row.getCell(1).value === 'Contracted') contracted = { qty: row.getCell(2).value, fmt: row.getCell(2).numFmt, unit: row.getCell(3).value }
+    })
+    expect(contracted).not.toBeNull()
+    expect(typeof contracted!.qty).toBe('number')
+    expect(contracted!.fmt).toBe('#,##0;(#,##0)')
+    expect(contracted!.unit).toBe('bu')
+    // The CSV carries the same plain numbers.
+    expect(buildCsv(payload)).toMatch(/^Contracted,6854,bu,$/m)
+  })
+
+  it('reads as the screen does: the report name, and the same filter line', () => {
+    expect(payload.title).toBe('Marketing Dashboard')
+    expect(payload.filters).toBe('2026 Crop Year · All Entities')
+    // A label that starts with "=" opens as a formula from a CSV file.
+    for (const section of payload.sections) for (const row of section.rows) expect(String(cellOf(row[0]).v ?? '')).not.toMatch(/^=/)
   })
 })

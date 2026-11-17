@@ -965,7 +965,7 @@ export function varietyDetailExportSections(args: {
       { label: 'Variety acres', align: 'right', format: 'acres' },
       { label: 'Dry bu', align: 'right', format: 'bu' },
       { label: 'Yield (bu/ac)', align: 'right', format: 'yield' },
-      { label: 'Moisture (wtd)', align: 'right', format: 'dec1' },
+      { label: 'Avg moisture (%)', align: 'right', format: 'dec1' },
       { label: 'Loads', align: 'right', format: 'int' },
       { label: 'Attribution' },
     ],
@@ -1013,7 +1013,7 @@ export function grainDetailExportSection(args: {
   // Combine entries lead the sheet as labeled source rows (netting in the
   // Split column), mirroring the on-screen banner above the load list.
   const combineExportRows: ExportSection['rows'] = combineRows.map((r) => [
-    fmtDate(r.info.entryDate),
+    r.info.entryDate ?? '',
     'Combine entry',
     '',
     null,
@@ -1023,18 +1023,18 @@ export function grainDetailExportSection(args: {
     r.info.adjustedBu,
     r.info.destinationBinId ? `Bin ${lookups.binNameById.get(r.info.destinationBinId) ?? ''}`.trim() : '',
     r.info.weighedBu > 0
-      ? `adjusted total — ${Math.round(r.info.weighedBu).toLocaleString()} bu weighed → ${Math.round(Math.max(0, r.info.remainderBu)).toLocaleString()} bu remainder`
-      : 'adjusted total',
+      ? `Adjusted total from the combine monitor: ${Math.round(r.info.weighedBu).toLocaleString()} bu weighed on the loads below, ${Math.round(Math.max(0, r.info.remainderBu)).toLocaleString()} bu went to the bin without a ticket`
+      : 'Adjusted total from the combine monitor',
   ])
   return {
     title,
     columns: [
-      { label: 'Date' },
+      { label: 'Date', format: 'date' },
       { label: 'Ticket' },
       { label: 'Truck' },
-      { label: 'Net lbs', align: 'right', format: 'lbs' },
-      { label: 'Moisture', align: 'right', format: 'dec1' },
-      { label: 'Test wt', align: 'right', format: 'dec1' },
+      { label: 'Net (lb)', align: 'right', format: 'lbs' },
+      { label: 'Moisture (%)', align: 'right', format: 'dec1' },
+      { label: 'Test wt (lb/bu)', align: 'right', format: 'dec1' },
       { label: 'Wet bu', align: 'right', format: 'bu' },
       { label: 'Dry bu', align: 'right', format: 'bu' },
       { label: 'Destination' },
@@ -1043,7 +1043,7 @@ export function grainDetailExportSection(args: {
     rows: [
       ...combineExportRows,
       ...detailLoads.map((l) => [
-        fmtDate(l.date),
+        l.date ?? '',
         l.ticket ?? '',
         l.truckId ? l.truckLabel ?? lookups.truckNameById.get(l.truckId) ?? '' : l.haulerTruck ? `${l.haulerTruck} (hauler)` : '',
         l.netLbs,
@@ -1077,15 +1077,15 @@ export function cottonDetailExportSection(args: {
     push('Gin receipts', { v: d.receiptCount, format: 'int' })
     push('Lint (lbs)', { v: d.lintLbs, format: 'lbs' })
     push('Bales', { v: d.baleCount, format: 'int' })
-    push('Avg bale (lbs)', d.avgBaleLbs != null ? { v: d.avgBaleLbs, format: 'int' } : '—')
-    push('Turnout', d.turnoutPct != null ? { v: d.turnoutPct, format: 'pct1' } : '—')
-    push('Avg loan value ($/lb)', d.weightedLoanCentsPerLb != null ? { v: d.weightedLoanCentsPerLb, format: 'cents' } : '—')
+    push('Avg bale (lbs)', d.avgBaleLbs != null ? { v: d.avgBaleLbs, format: 'lbs' } : '')
+    push('Turnout', d.turnoutPct != null ? { v: d.turnoutPct, format: 'pct1' } : '')
+    push('Avg loan value ($/lb)', d.weightedLoanCentsPerLb != null ? { v: d.weightedLoanCentsPerLb, format: 'cents' } : '')
     push('Bales classed', { v: d.classedBaleCount, format: 'int' })
     push('Seed cotton on yard (lbs)', { v: d.yardSeedCottonLbs, format: 'lbs' })
   }
   return {
     title: args.title,
-    columns: [{ label: '' }, { label: '', align: 'right' }],
+    columns: [{ label: 'Item' }, { label: 'Value', align: 'right' }],
     rows,
     rowMeta,
   }

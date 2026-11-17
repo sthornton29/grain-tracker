@@ -1,7 +1,7 @@
 ---
 page_route: /yields
 title: Yields
-updated: 2026-10-25
+updated: 2026-11-17
 keywords: yields, bushels per acre, cotton, seed cotton, lint, turnout, estimated lint, picked, ginned, on yard, ginning status, field, farm, entity, variety, landowner, irrigated, dryland, harvest, allocation, load tags, practice, season, export, detail, loads, tickets, moisture, test weight, split load, drill down, combine, yield monitor, no scales, double-crop, full-season, cropping, DC, behind wheat, soybeans after wheat
 ---
 ## What this page is for
@@ -16,7 +16,7 @@ Yields turns your load log into bushels per acre. The same production can be vie
 - When a crop you grow both ways is in view — soybeans planted full-season on some fields and behind wheat on others — a **Cropping** control appears beside Practice: **All**, **Full-season**, or **Double-crop**. It works on every tab, stacks with the Practice filter (Irrigated + Double-crop is fine), and is remembered like the other filters. It only shows for a crop marked Double-crop under Settings → Crops in a year that actually has both kinds planted.
 - **Tap any row (or its ▸ button) to open its detail.** A field row shows the loads behind its yield; a farm, entity, landowner, or variety row shows its totals plus a field-by-field breakdown, and each field there opens further into its loads — two taps from a landowner (or a variety) to a scale ticket.
 - Bushels show as whole numbers and acres to one decimal, the same as every report.
-- Export any view to a spreadsheet or a formatted report — the export carries exactly the columns you're showing on screen, and when a row's detail is open the export adds a Load Detail sheet for it.
+- Export any view to a spreadsheet or a formatted report. The export carries the columns you're showing on screen (plus the farm, FSA number and year that identify each row), in the same order as the screen, with the average yield per crop on a Summary sheet. By entity is one table with a heading and a total for each entity; By landowner gets a sheet per landowner. When a row's detail is open, the export adds a sheet of that row's loads, named for the row.
 
 ## Reading the table
 

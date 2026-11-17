@@ -20,7 +20,7 @@ import {
   fmtPnl,
   fmtCents,
 } from '@/lib/hedging'
-import { formatNumber, type ExportPayload } from '@/lib/exports'
+import { formatNumber, type ExportPayload, type ExportCell } from '@/lib/exports'
 import { quoteMapFromWire, type Quote } from '@/lib/quotes'
 import { markOpenPosition } from '@/lib/hedging-rows'
 import { buildEntityScope } from '@/lib/entity-scope'
@@ -60,6 +60,12 @@ function contractLabel(commodity: string, contractMonth: string | null | undefin
   if (!p) return commodity
   const mon = p.abbr.charAt(0) + p.abbr.slice(1).toLowerCase()
   return `${mon} ${String(p.year2).padStart(2, '0')} ${commodity}`
+}
+
+// The hedging page's own words for how an option ended, on screen and in
+// the export alike (never the stored code).
+function optionStatusLabel(s: OptionPosition['status']): string {
+  return s === 'open' ? 'Open' : s === 'closed_offset' ? 'Traded back' : s === 'expired_worthless' ? 'Expired' : 'Exercised'
 }
 
 export default function HedgingSummaryReport({ onPayloadChange, headerActions }: Props) {
@@ -271,9 +277,13 @@ export default function HedgingSummaryReport({ onPayloadChange, headerActions }:
     [events, viewer.isViewer, cropYear, commodity, entityId, from, to],
   )
   const activity = useMemo(() => buildHedgeTimeline(filteredEvents, { entityName }), [filteredEvents]) // eslint-disable-line react-hooks/exhaustive-deps
+  // The export's "Linked To" cell. A position that is gone is named in words —
+  // never by its record id.
   const positionLabel = (id: string | null) => {
     const p = id ? positions.find((x) => x.id === id) : null
-    return p ? `${p.contract_month} ${p.commodity} ${p.side} ${p.num_contracts} @ ${p.trade_price}` : (id ?? '')
+    return p
+      ? `${contractLabel(p.commodity, p.contract_month)} · ${p.side} ${p.num_contracts} @ ${fmtCommodityPrice(p.commodity, p.trade_price)}`
+      : id ? 'A position no longer on file' : ''
   }
 
   // Summary by crop year × commodity.
@@ -300,7 +310,9 @@ export default function HedgingSummaryReport({ onPayloadChange, headerActions }:
     const granted = viewerAllEntitiesLabel(viewer, entities)
     return filterSummaryOf(
       cropYearLabel(cropYearValue),
-      entityId !== 'All' ? (entityName(entityId) || entityId) : (granted ?? 'All Entities'),
+      // A saved entity filter that no longer matches an entity is named in
+      // words — the line prints on every export, so never a record id.
+      entityId !== 'All' ? (entityName(entityId) || 'Entity') : (granted ?? 'All Entities'),
       commodity === 'All' ? 'All Commodities' : commodity,
       from && to ? `${fmtDate(from)} – ${fmtDate(to)}` : from ? `From ${fmtDate(from)}` : to ? `Through ${fmtDate(to)}` : null,
     )
@@ -309,67 +321,84 @@ export default function HedgingSummaryReport({ onPayloadChange, headerActions }:
 
   function buildExportPayload(): ExportPayload {
     const sections: ExportPayload['sections'] = []
+    // The grand totals: the screen's headline cards and its "Grand total" row.
+    const gUnrealized = summary.reduce((s, r) => s + r.unrealized, 0)
+    const gRealized = summary.reduce((s, r) => s + r.realized, 0)
+    const gOptions = filteredOptions.reduce((s, o) => s + (optUnrealizedOf(o) ?? 0) + optNetRealizedOf(o), 0)
+    const gCombined = gUnrealized + gRealized + gOptions
+    // A gain/loss to the cent, green or red as on screen; blank when there is none.
+    const pnl = (n: number | null | undefined): ExportCell =>
+      n == null ? '' : { v: Number(Number(n).toFixed(2)), tone: signedTone(n) }
+    // Cotton trades in ¢/lb and shows as $/lb; grain trades in $/bu, to the quarter cent.
+    const priceCell = (commodity: string, n: number | null | undefined): ExportCell =>
+      n == null ? '' : commodity === 'Cotton' ? { v: Number(n), format: 'cents' } : { v: Number(n), format: 'price4' }
+    // Whole contracts show whole; a viewer's pro-rata share keeps two decimals.
+    const contractsCell = (n: number): ExportCell => {
+      const v = Number(Number(n).toFixed(2))
+      return Number.isInteger(v) ? v : { v, format: 'dec2' }
+    }
+    const qtyCell = (commodity: string, n: number): ExportCell =>
+      contractUnit(commodity) === 'lbs' ? { v: Math.round(n), format: 'lbs' } : Math.round(n)
+    const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1)
+    const optionStatus = optionStatusLabel
     sections.push({
       title: 'Summary by Crop Year',
       columns: [
         { label: 'Crop Year', format: 'text' }, { label: 'Commodity' },
-        { label: 'Futures Contracts', align: 'right', format: 'dec2' }, { label: 'Qty (bu · lbs)', align: 'right', format: 'bu' }, { label: 'Unit' },
+        { label: 'Contracts', align: 'right', format: 'int' }, { label: 'Quantity', align: 'right', format: 'bu' }, { label: 'Unit' },
         { label: 'Avg Hedge Price', align: 'right', format: 'price' }, { label: 'Futures Unrealized', align: 'right', format: 'usd2' },
-        { label: 'Futures Realized (net)', align: 'right', format: 'usd2' }, { label: 'Options P&L (net)', align: 'right', format: 'usd2' },
-        { label: 'Combined P&L', align: 'right', format: 'usd2' },
+        { label: 'Futures Realized (net)', align: 'right', format: 'usd2' }, { label: 'Options Gain/Loss', align: 'right', format: 'usd2' },
+        { label: 'Combined Gain/Loss', align: 'right', format: 'usd2' },
       ],
-      rows: summary.map((s) => {
-        const opt = optPnlForKey(s.cropYear, s.commodity)
-        return [
-          s.cropYear, s.commodity, Number(s.contracts.toFixed(2)), Math.round(s.bushels), contractUnit(s.commodity),
-          s.contracts > 0 ? Number((s.priceWeight / s.contracts).toFixed(4)) : '',
-          Number(s.unrealized.toFixed(2)), Number(s.realized.toFixed(2)), Number(opt.toFixed(2)),
-          Number((s.unrealized + s.realized + opt).toFixed(2)),
-        ]
-      }),
+      rows: [
+        ...summary.map((s): ExportCell[] => {
+          const opt = optPnlForKey(s.cropYear, s.commodity)
+          return [
+            s.cropYear, s.commodity, contractsCell(s.contracts), qtyCell(s.commodity, s.bushels), contractUnit(s.commodity),
+            s.contracts > 0 ? priceCell(s.commodity, Number((s.priceWeight / s.contracts).toFixed(4))) : '',
+            pnl(s.unrealized), pnl(s.realized), pnl(opt), pnl(s.unrealized + s.realized + opt),
+          ]
+        }),
+        ['Grand total', '', '', '', '', '', pnl(gUnrealized), pnl(gRealized), pnl(gOptions), pnl(gCombined)],
+      ],
+      rowMeta: [...summary.map(() => 'data' as const), 'total' as const],
     })
     sections.push({
       title: 'Positions',
       columns: [
-        { label: 'Crop Year', format: 'text' }, { label: 'Commodity' }, { label: 'Month' }, { label: 'Symbol' },
-        { label: 'Side' }, { label: 'Contracts', align: 'right', format: 'dec2' }, { label: 'Qty (bu · lbs)', align: 'right', format: 'bu' }, { label: 'Unit' },
-        { label: 'Trade Date' }, { label: 'Trade Price', align: 'right', format: 'price' }, { label: 'Status' },
-        { label: 'Close Date' }, { label: 'Close Price', align: 'right', format: 'price' },
-        { label: 'Realized P&L', align: 'right', format: 'usd2' }, { label: 'Commission', align: 'right', format: 'usd2' },
-        { label: 'Net P&L', align: 'right', format: 'usd2' }, { label: 'Unrealized P&L', align: 'right', format: 'usd2' }, { label: 'Entity' },
+        { label: 'Contract' }, { label: 'Crop Year', format: 'text' }, { label: 'Commodity' }, { label: 'Symbol' },
+        { label: 'Side' }, { label: 'Contracts', align: 'right', format: 'int' }, { label: 'Quantity', align: 'right', format: 'bu' }, { label: 'Unit' },
+        { label: 'Trade Date', format: 'date' }, { label: 'Trade Price', align: 'right', format: 'price' }, { label: 'Status' },
+        { label: 'Close Date', format: 'date' }, { label: 'Close Price', align: 'right', format: 'price' },
+        { label: 'Realized Gain/Loss', align: 'right', format: 'usd2' }, { label: 'Commission', align: 'right', format: 'usd2' },
+        { label: 'Net Gain/Loss', align: 'right', format: 'usd2' }, { label: 'Unrealized Gain/Loss', align: 'right', format: 'usd2' }, { label: 'Entity' },
       ],
-      rows: filtered.map((p) => {
-        const u = unrealizedOf(p)
-        return [
-          p.crop_year, p.commodity, p.contract_month, p.contract_symbol, p.side,
-          Number(Number(p.num_contracts).toFixed(2)), Math.round(quantityFor(p.commodity, p.num_contracts)), contractUnit(p.commodity),
-          p.trade_date, Number(p.trade_price), p.status,
-          p.close_date ?? '', p.close_price != null ? Number(p.close_price) : '',
-          p.realized_pnl != null ? Number(p.realized_pnl) : '', Number(p.commission ?? 0),
-          p.status === 'closed' ? Number(netRealizedOf(p).toFixed(2)) : '',
-          u != null ? Number(u.toFixed(2)) : '', entityName(p.entity_id),
-        ]
-      }),
+      rows: filtered.map((p): ExportCell[] => [
+        contractLabel(p.commodity, p.contract_month), p.crop_year, p.commodity, p.contract_symbol, cap(p.side),
+        contractsCell(p.num_contracts), qtyCell(p.commodity, quantityFor(p.commodity, p.num_contracts)), contractUnit(p.commodity),
+        p.trade_date, priceCell(p.commodity, p.trade_price), cap(p.status),
+        p.close_date ?? '', priceCell(p.commodity, p.close_price),
+        pnl(p.realized_pnl), p.commission ? Number(p.commission) : '',
+        p.status === 'closed' ? pnl(netRealizedOf(p)) : '',
+        pnl(unrealizedOf(p)), entityName(p.entity_id),
+      ]),
     })
     if (filteredOptions.length > 0) {
       sections.push({
         title: 'Options',
         columns: [
-          { label: 'Crop Year', format: 'text' }, { label: 'Commodity' }, { label: 'Type' }, { label: 'Side' },
-          { label: 'Month' }, { label: 'Strike', align: 'right', format: 'price' }, { label: 'Contracts', align: 'right', format: 'dec2' },
-          { label: 'Trade Date' }, { label: 'Premium ¢', align: 'right', format: 'dec2' }, { label: 'Premium $', align: 'right', format: 'usd2' },
-          { label: 'Status' }, { label: 'Close Date' }, { label: 'Close ¢', align: 'right', format: 'dec2' },
-          { label: 'Realized P&L', align: 'right', format: 'usd2' }, { label: 'Unrealized P&L', align: 'right', format: 'usd2' }, { label: 'Entity' },
+          { label: 'Contract' }, { label: 'Crop Year', format: 'text' }, { label: 'Commodity' }, { label: 'Type' }, { label: 'Side' },
+          { label: 'Strike', align: 'right', format: 'price' }, { label: 'Contracts', align: 'right', format: 'int' },
+          { label: 'Trade Date', format: 'date' }, { label: 'Premium ¢', align: 'right', format: 'dec2' }, { label: 'Premium $', align: 'right', format: 'usd2' },
+          { label: 'Status' }, { label: 'Close Date', format: 'date' }, { label: 'Close ¢', align: 'right', format: 'dec2' },
+          { label: 'Realized Gain/Loss', align: 'right', format: 'usd2' }, { label: 'Unrealized Gain/Loss', align: 'right', format: 'usd2' }, { label: 'Entity' },
         ],
-        rows: filteredOptions.map((o) => {
-          const u = optUnrealizedOf(o)
-          return [
-            o.crop_year, o.commodity, o.option_type, o.side, o.underlying_contract_month,
-            Number(o.strike_price), Number(Number(o.num_contracts).toFixed(2)), o.trade_date, Number(o.premium_cents), Number(o.premium_total ?? 0),
-            o.status, o.close_date ?? '', o.close_price_cents != null ? Number(o.close_price_cents) : '',
-            o.realized_pnl != null ? Number(o.realized_pnl) : '', u != null ? Number(u.toFixed(2)) : '', entityName(o.entity_id),
-          ]
-        }),
+        rows: filteredOptions.map((o): ExportCell[] => [
+          contractLabel(o.commodity, o.underlying_contract_month), o.crop_year, o.commodity, cap(o.option_type), cap(o.side),
+          Number(o.strike_price), contractsCell(o.num_contracts), o.trade_date, Number(o.premium_cents), Number(o.premium_total ?? 0),
+          optionStatus(o.status), o.close_date ?? '', o.close_price_cents != null ? Number(o.close_price_cents) : '',
+          pnl(o.realized_pnl), pnl(optUnrealizedOf(o)), entityName(o.entity_id),
+        ]),
       })
     }
     // Hedging activity — the auditable trail, one row per event, chronological,
@@ -379,14 +408,11 @@ export default function HedgingSummaryReport({ onPayloadChange, headerActions }:
         title: 'Hedging Activity',
         columns: HEDGE_EVENT_EXPORT_COLUMNS,
         rows: hedgeEventExportRows(filteredEvents, { entityName, positionLabel }),
+        freezeColumns: 2,
       })
     }
     // Headline band mirroring the on-screen summary cards (formatted through the
     // shared formatter so negatives parenthesize consistently with the tables).
-    const gUnrealized = summary.reduce((s, r) => s + r.unrealized, 0)
-    const gRealized = summary.reduce((s, r) => s + r.realized, 0)
-    const gOptions = filteredOptions.reduce((s, o) => s + (optUnrealizedOf(o) ?? 0) + optNetRealizedOf(o), 0)
-    const gCombined = gUnrealized + gRealized + gOptions
     const summaryBand: ExportPayload['summary'] = [
       { label: 'Futures Unrealized', value: formatNumber(gUnrealized, 'usd2'), tone: signedTone(gUnrealized) },
       { label: 'Futures Realized (net)', value: formatNumber(gRealized, 'usd2'), tone: signedTone(gRealized) },
@@ -524,10 +550,10 @@ export default function HedgingSummaryReport({ onPayloadChange, headerActions }:
                         <td className="pr-3 py-1 text-right tabular-nums">{fmtContracts(p.num_contracts)}</td>
                         <td className="pr-3 py-1 text-right tabular-nums whitespace-nowrap">{fmtQty(quantityFor(p.commodity, p.num_contracts))} {contractUnit(p.commodity)}</td>
                         <td className="pr-3 py-1 whitespace-nowrap">{fmtDate(p.trade_date)}</td>
-                        <td className="pr-3 py-1 text-right tabular-nums">{fmtPrice(p.trade_price)}</td>
+                        <td className="pr-3 py-1 text-right tabular-nums">{fmtCommodityPrice(p.commodity, p.trade_price)}</td>
                         <td className="pr-3 py-1 capitalize">{p.status}</td>
                         <td className="pr-3 py-1 whitespace-nowrap">{fmtDate(p.close_date)}</td>
-                        <td className="pr-3 py-1 text-right tabular-nums">{p.close_price != null ? fmtPrice(p.close_price) : ''}</td>
+                        <td className="pr-3 py-1 text-right tabular-nums">{p.close_price != null ? fmtCommodityPrice(p.commodity, p.close_price) : ''}</td>
                         <td className={`pr-3 py-1 text-right tabular-nums ${toneText(signedTone(p.realized_pnl))}`}>{p.realized_pnl != null ? fmtPnl(p.realized_pnl) : ''}</td>
                         <td className="pr-3 py-1 text-right tabular-nums">{p.commission ? fmtPnl(p.commission) : ''}</td>
                         <td className={`pr-3 py-1 text-right tabular-nums ${toneText(signedTone(net))}`}>{p.status === 'closed' ? fmtPnl(net) : ''}</td>
@@ -566,7 +592,7 @@ export default function HedgingSummaryReport({ onPayloadChange, headerActions }:
                           <td className="pr-3 py-1 whitespace-nowrap">{fmtDate(o.trade_date)}</td>
                           <td className="pr-3 py-1 text-right tabular-nums">{fmtCents(o.premium_cents)}</td>
                           <td className="pr-3 py-1 text-right tabular-nums">{fmtPnl(o.premium_total)}</td>
-                          <td className="pr-3 py-1 whitespace-nowrap capitalize">{o.status}</td>
+                          <td className="pr-3 py-1 whitespace-nowrap">{optionStatusLabel(o.status)}</td>
                           <td className="pr-3 py-1 whitespace-nowrap">{fmtDate(o.close_date)}</td>
                           <td className="pr-3 py-1 text-right tabular-nums">{o.close_price_cents != null ? fmtCents(o.close_price_cents) : ''}</td>
                           <td className={`pr-3 py-1 text-right tabular-nums ${toneText(signedTone(o.realized_pnl))}`}>{o.realized_pnl != null ? fmtPnl(o.realized_pnl) : ''}</td>

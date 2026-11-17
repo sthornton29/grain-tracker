@@ -34,7 +34,7 @@ import {
 import { attributeVarietyBushels, type VarietyPlantingPart } from '@/lib/variety-yields'
 import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { plantedFieldIds, scopeToPlanted } from '@/lib/planted-scope'
-import type { ExportColumn, ExportPayload, ExportSection } from '@/lib/exports'
+import type { ExportCell, ExportColumn, ExportPayload, ExportSection, RowKind, SummaryCard } from '@/lib/exports'
 import type { CombineYieldEntry, Crop, CropAssumption, Entity, Farm, Field, FieldPlanting, FieldPlantingVariety, County, LoadSplit } from '@/lib/types'
 
 // Carries everything the drill-down needs (lib/yield-detail's DetailLoadLike)
@@ -786,7 +786,9 @@ export default function YieldsPage() {
     } else {
       return null
     }
-    const title = `Load Detail — ${label} · ${rowCropName} · ${yearLabel}`
+    // The row's own name leads, so the Excel tab (31 characters) still says
+    // which field / farm / entity the sheet is for.
+    const title = `${label} · ${rowCropName} · ${yearLabel} ${isCottonCrop(rowCropName) ? 'detail' : 'loads'}`
     if (isCottonCrop(rowCropName)) {
       // Cotton module on: the row's constituent cotton plantings, one line
       // each (seed cotton, lint, turnout, both statuses) — the same rows the
@@ -805,14 +807,20 @@ export default function YieldsPage() {
     if (showEntityYear) columns.push({ label: 'Year', format: 'text' })
     columns.push({ label: 'Acres', align: 'right', format: 'acres' })
     if (entityShowBreakdown) columns.push({ label: 'Irr ac', align: 'right', format: 'acres' }, { label: 'Dry ac', align: 'right', format: 'acres' })
-    if (entityShowBreakdown) columns.push({ label: 'Irrigated yield', align: 'right', format: 'yield' }, { label: 'Dryland yield', align: 'right', format: 'yield' })
+    if (entityShowBreakdown) columns.push({ label: practiceYieldHeader('Irrigated', entityUnit), align: 'right', format: 'yield' }, { label: practiceYieldHeader('Dryland', entityUnit), align: 'right', format: 'yield' })
     columns.push({ label: yieldHeader(entityUnit), align: 'right', format: 'yield' })
     columns.push({ label: prodHeader(entityUnit), align: 'right', format: prodFormat(entityUnit) })
     if (entityUnit === 'mixed') columns.push({ label: 'Unit' })
 
-    const sections: ExportSection[] = entityGroups.map((g) => {
-      const rows: Array<Array<string | number | null>> = []
-      const rowMeta: ('data' | 'subhead' | 'subtotal' | 'total')[] = []
+    // ONE table on its own sheet, read top to bottom like the screen's cards:
+    // a label row per entity, its crops, then its total. (A table per entity
+    // stacked on a single sheet left Excel no header to freeze, and an open
+    // load list landed underneath them in the wrong column widths.)
+    const rows: ExportCell[][] = []
+    const rowMeta: RowKind[] = []
+    for (const g of entityGroups) {
+      const groupName = g.groupId === '∅' ? 'No entity' : g.groupName
+      rows.push([`${groupName} — ${g.rows.length} crop${g.rows.length === 1 ? '' : 's'}`]); rowMeta.push('subhead')
       for (const r of g.rows) {
         const cells: (string | number)[] = [r.cropName]
         if (showEntityYear) cells.push(r.seasonYear)
@@ -830,7 +838,7 @@ export default function YieldsPage() {
         )) { rows.push(sub.cells); rowMeta.push(sub.meta) }
       }
       if (g.rows.length > 1) {
-        const cells: (string | number)[] = [`${g.groupName} total`]
+        const cells: (string | number)[] = [`${groupName} total`]
         if (showEntityYear) cells.push('')
         cells.push(g.acres)
         if (entityShowBreakdown) cells.push('', '')
@@ -840,11 +848,11 @@ export default function YieldsPage() {
         if (entityUnit === 'mixed') cells.push('')
         rows.push(cells); rowMeta.push('total')
       }
-      return { title: `${g.groupName} — ${g.rows.length} crop${g.rows.length === 1 ? '' : 's'}`, columns, rows, rowMeta }
-    })
+    }
+    const sections: ExportSection[] = [{ title: 'By Entity', columns, rows, rowMeta }]
     const detailSection = openDetailExportSection('entity')
     if (detailSection) sections.push(detailSection)
-    return { title: exportTitle('Yields by Entity'), filters: fieldFiltersLabel(), singleSheet: true, sections }
+    return { title: exportTitle('Yields by Entity'), filters: fieldFiltersLabel(), summary: yieldSummaryCards(), sections }
   }
 
   type VarietyAgg = {
@@ -923,6 +931,10 @@ export default function YieldsPage() {
   }
   const prodHeader = (u: 'bu' | 'lbs' | 'mixed') => (u === 'lbs' ? 'Lint lbs' : u === 'bu' ? 'Dry bu' : 'Production')
   const yieldHeader = (u: 'bu' | 'lbs' | 'mixed') => (u === 'lbs' ? 'Yield (lbs/ac)' : u === 'bu' ? 'Yield (bu/ac)' : 'Yield per acre')
+  // Exports: the Irrigated / Dryland yield columns name the same unit the
+  // Yield column does (mixed tables carry it in their Unit column).
+  const practiceYieldHeader = (kind: 'Irrigated' | 'Dryland', u: 'bu' | 'lbs' | 'mixed') =>
+    `${kind} yield${u === 'lbs' ? ' (lbs/ac)' : u === 'bu' ? ' (bu/ac)' : ''}`
   const prodCell = (n: number, u: 'bu' | 'lbs' | 'mixed', cropId: string) => (u === 'mixed' ? `${fmtInt(n)} ${unitOf(cropId)}` : fmtInt(n))
   const yieldCell = (y: number | null, u: 'bu' | 'lbs' | 'mixed', cropId: string) =>
     y == null ? '—' : u === 'mixed' ? `${fmtNum(y, 1)} ${unitOf(cropId)}/ac` : fmtNum(y, 1)
@@ -1023,26 +1035,35 @@ export default function YieldsPage() {
     }).length
   }, [multiVarietyPlantings, varietiesByPlanting])
 
-  // Filter summary shared by the field and farm exports — mirrors the filter
-  // strip that drives both tables.
+  // The exports' filter line: the SAME line the report header shows on screen
+  // ("2026 Crop Year · All Entities · Corn"), then the view's own switches —
+  // practice, cropping, the irrigated / dryland columns — in the words their
+  // controls use.
   function fieldFiltersLabel(): string {
-    const parts: string[] = []
-    parts.push(cropYearLabel(year))
-    if (cropId) parts.push(`Crop: ${cropById.get(cropId)?.name ?? '?'}`)
-    if (farmId) parts.push(`Farm: ${farmById.get(farmId)?.name ?? '?'}`)
-    if (entityId) parts.push(`Entity: ${entityById.get(entityId)?.name ?? '?'}`)
-    else {
-      const granted = viewerAllEntitiesLabel(viewer, entities)
-      if (granted) parts.push(`Entity: ${granted}`)
+    return filterSummaryOf(
+      filterSummary,
+      view === 'field' && practiceFilter !== 'all' ? (practiceFilter === 'irrigated' ? 'Irrigated only' : 'Dryland only') : null,
+      showCropping ? croppingFilterLabel(croppingFilter) : null,
+      view !== 'variety' && showYieldToggle && yieldView === 'breakdown' ? 'Irrigated / Dryland breakdown' : null,
+    )
+  }
+  // The headline cards, as on screen: each crop's average yield over the
+  // counted fields, and — where a crop has both croppings in view — its
+  // Full-season and Double-crop tiles.
+  function yieldSummaryCards(): SummaryCard[] {
+    const perAcre = (id: string) => (unitOf(id) === 'lbs' ? 'lbs lint/ac' : 'bu/ac')
+    const cards: SummaryCard[] = [...displayAverages.values()]
+      .map((avg) => ({ avg, name: cropById.get(avg.cropId)?.name ?? '' }))
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .map(({ avg, name }) => ({ label: `${name} average yield`, value: `${fmtNum(avg.yield, 1)} ${perAcre(avg.cropId)}`, sub: `${fmtInt(avg.acres)} ac` }))
+    if (showCropping) {
+      for (const t of croppingTiles) {
+        for (const side of [{ label: CROPPING_LABEL.full_season, avg: t.fullSeason.avg }, { label: CROPPING_LABEL.double_crop, avg: t.doubleCrop.avg }]) {
+          if (side.avg) cards.push({ label: `${t.cropName} — ${side.label}`, value: `${fmtNum(side.avg.yield, 1)} ${perAcre(t.cropId)}`, sub: `${fmtNum(side.avg.acres, 1)} ac harvested` })
+        }
+      }
     }
-    if (countyId) {
-      const c = counties.find((c) => c.id === countyId)
-      parts.push(`County: ${c ? `${c.name}, ${c.state_code}` : '?'}`)
-    }
-    if (view === 'field' && practiceFilter !== 'all') parts.push(`Practice: ${practiceFilter}`)
-    if (showCropping && croppingFilter !== 'all') parts.push(`Cropping: ${croppingFilterLabel(croppingFilter)}`)
-    if (showYieldToggle && yieldView === 'breakdown') parts.push('Irrigated/Dryland breakdown')
-    return parts.join(' · ')
+    return cards
   }
   // The export title names an active Cropping filter: "Yields by Field — Soybean 2026 · Double-crop only".
   function exportTitle(base: string): string {
@@ -1064,7 +1085,7 @@ export default function YieldsPage() {
   function buildFieldPayload(): ExportPayload {
     // Cotton crop filter: the cotton table IS the page's table.
     if (cottonFilter) {
-      return { title: 'Cotton Yields by Field', filters: fieldFiltersLabel(), sections: [cottonSectionExport(cottonRows)] }
+      return { title: 'Cotton Yields by Field', filters: fieldFiltersLabel(), summary: yieldSummaryCards(), sections: [cottonSectionExport(cottonRows, 'By Field')] }
     }
     const columns: ExportColumn[] = [
       { label: 'Field' },
@@ -1077,12 +1098,14 @@ export default function YieldsPage() {
     ]
     if (showIrrigatedCol) columns.push({ label: 'Irr ac', align: 'right', format: 'acres' })
     if (showDrylandCol) columns.push({ label: 'Dry ac', align: 'right', format: 'acres' })
-    if (showIrrigatedCol) columns.push({ label: 'Irrigated yield', align: 'right', format: 'yield' })
-    if (showDrylandCol) columns.push({ label: 'Dryland yield', align: 'right', format: 'yield' })
+    if (showIrrigatedCol) columns.push({ label: practiceYieldHeader('Irrigated', 'bu'), align: 'right', format: 'yield' })
+    if (showDrylandCol) columns.push({ label: practiceYieldHeader('Dryland', 'bu'), align: 'right', format: 'yield' })
     if (showTotalCol) columns.push({ label: 'Yield (bu/ac)', align: 'right', format: 'yield' })
     columns.push({ label: 'Dry bu', align: 'right', format: 'bu' })
 
-    const rows = includedPlantings.map((p) => {
+    // The counted fields (includedPlantings), in the order the screen lists
+    // them: most recently harvested first.
+    const rows = fieldRows.filter((p) => !excludedFields.has(p.id)).map((p) => {
       const r = rowFor(p)
       // Mirror the on-screen fall-back: an irrigated/dryland-only filter shows
       // the total yield in its single column when no breakout exists.
@@ -1097,20 +1120,22 @@ export default function YieldsPage() {
         ...(showCropping ? [CROPPING_LABEL[croppingOfP(p)]] : []),
         r.acres,
       ]
-      if (showIrrigatedCol) cells.push(r.irrAc)
-      if (showDrylandCol) cells.push(r.dryAc)
+      // No irrigated / dryland acres is a blank, as on screen — not 0.0.
+      if (showIrrigatedCol) cells.push(r.irrAc > 0 ? r.irrAc : '')
+      if (showDrylandCol) cells.push(r.dryAc > 0 ? r.dryAc : '')
       if (showIrrigatedCol) cells.push(irrY ?? '')
       if (showDrylandCol) cells.push(dryY ?? '')
       if (showTotalCol) cells.push(r.totalYield ?? '')
       cells.push(r.dryBu)
       return cells
     })
-    const sections: ExportSection[] = [{ columns, rows }]
+    // Field + Farm stay in view once the breakdown columns make the table wide.
+    const sections: ExportSection[] = [{ title: 'By Field', columns, rows, ...(columns.length >= 9 ? { freezeColumns: 2 } : {}) }]
     const detailSection = openDetailExportSection('field')
     if (detailSection) sections.push(detailSection)
     // The cotton table rides along below the grain table, as on screen.
     if (cottonOn && cottonRows.length > 0) sections.push(cottonSectionExport(cottonRows, `Cotton — ${cropYearLabel(year)}`))
-    return { title: exportTitle('Yields by Field'), filters: fieldFiltersLabel(), sections }
+    return { title: exportTitle('Yields by Field'), filters: fieldFiltersLabel(), summary: yieldSummaryCards(), sections }
   }
 
   function buildFarmPayload(): ExportPayload {
@@ -1126,7 +1151,7 @@ export default function YieldsPage() {
       columns.push({ label: 'Irr ac', align: 'right', format: 'acres' }, { label: 'Dry ac', align: 'right', format: 'acres' })
     }
     if (farmShowBreakdown) {
-      columns.push({ label: 'Irrigated yield', align: 'right', format: 'yield' }, { label: 'Dryland yield', align: 'right', format: 'yield' })
+      columns.push({ label: practiceYieldHeader('Irrigated', farmUnit), align: 'right', format: 'yield' }, { label: practiceYieldHeader('Dryland', farmUnit), align: 'right', format: 'yield' })
     }
     columns.push({ label: yieldHeader(farmUnit), align: 'right', format: 'yield' })
     columns.push({ label: prodHeader(farmUnit), align: 'right', format: prodFormat(farmUnit) })
@@ -1137,7 +1162,7 @@ export default function YieldsPage() {
     for (const r of byFarm) {
       const y = farmYields(r)
       const cells: (string | number)[] = [
-        r.farmName,
+        r.farmId == null ? 'No farm' : r.farmName,
         r.fsaNumber ?? '',
         r.entityName,
         r.cropName,
@@ -1160,10 +1185,10 @@ export default function YieldsPage() {
         (acres, yld, bu) => [acres, ...(farmShowBreakdown ? ['', '', '', ''] : []), yld ?? '', bu, ...(farmUnit === 'mixed' ? [unitOf(r.cropId)] : [])],
       )) { rows.push(sub.cells); rowMeta.push(sub.meta) }
     }
-    const sections: ExportSection[] = [{ columns, rows, rowMeta }]
+    const sections: ExportSection[] = [{ title: 'By Farm', columns, rows, rowMeta }]
     const detailSection = openDetailExportSection('farm')
     if (detailSection) sections.push(detailSection)
-    return { title: exportTitle('Yields by Farm'), filters: fieldFiltersLabel(), sections }
+    return { title: exportTitle('Yields by Farm'), filters: fieldFiltersLabel(), summary: yieldSummaryCards(), sections }
   }
 
   function buildVarietyPayload(): ExportPayload {
@@ -1178,7 +1203,7 @@ export default function YieldsPage() {
       ...(varietyUnit === 'mixed' ? [{ label: 'Unit' } as ExportColumn] : []),
       { label: 'Note' },
     ]
-    const rows: (string | number)[][] = []
+    const rows: ExportCell[][] = []
     const rowMeta: ('data' | 'subtotal')[] = []
     for (const r of varietyAgg) {
       const yld = r.acres > 0 ? r.dryBu / r.acres : null
@@ -1191,7 +1216,8 @@ export default function YieldsPage() {
         yld ?? '',
         r.dryBu,
         ...(varietyUnit === 'mixed' ? [unitOf(varietyCropId(r))] : []),
-        r.anyAcreShare ? 'incl. acre-share est.' : '',
+        // The amber "acre-share estimate" marker on screen, in words.
+        r.anyAcreShare ? { v: 'Includes an acre-share estimate', tone: 'warning' as const } : '',
       ]); rowMeta.push('data')
       for (const sub of splitSubRows(
         varietySplit(r),
@@ -1199,13 +1225,15 @@ export default function YieldsPage() {
         (acres, yld2, bu) => [acres, yld2 ?? '', bu, ...(varietyUnit === 'mixed' ? [unitOf(varietyCropId(r))] : []), ''],
       )) { rows.push(sub.cells); rowMeta.push(sub.meta) }
     }
-    const sections: ExportSection[] = [{ columns, rows, rowMeta }]
+    const sections: ExportSection[] = [{ title: 'By Variety', columns, rows, rowMeta }]
     // An open drill-down exports its variety detail sheets (per-field
     // attribution + the constituent loads) through the shared layer.
     if (openDetail?.view === 'variety') {
       const r = varietyAgg.find((x) => varietyRowKey(x) === openDetail.key)
       if (r) {
-        const title = `Variety Detail — ${r.variety} · ${r.cropName} · ${r.seasonYear}`
+        // The variety's own name leads: it and its "— loads" sheet both have
+        // to stay distinct inside Excel's 31-character tab.
+        const title = `${r.variety} · ${r.cropName} · ${r.seasonYear}`
         if (isCottonCrop(r.cropName)) {
           if (cottonOn) sections.push(cottonSectionExport(cottonRowsFor(varietyRowPlantings(r)), title))
           else if (cottonDetail.data) {
@@ -1221,7 +1249,7 @@ export default function YieldsPage() {
         }
       }
     }
-    return { title: exportTitle('Yields by Variety'), filters: fieldFiltersLabel(), sections }
+    return { title: exportTitle('Yields by Variety'), filters: fieldFiltersLabel(), summary: yieldSummaryCards(), sections }
   }
 
   function openBreakout(p: FieldPlanting) {

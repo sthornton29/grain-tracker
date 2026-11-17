@@ -16,7 +16,7 @@ import {
   type CoveragePlantingInput, type CoveragePolicyInput, type CoverageRow, type CoverageStatus,
 } from '@/lib/crop-insurance'
 import ExportBar from '@/components/export-bar'
-import { formatNumber, type ExportPayload } from '@/lib/exports'
+import { formatNumber, type ExportCell, type ExportPayload } from '@/lib/exports'
 import type { Crop, County, Entity, FieldPlanting, CropInsurancePolicy, Field, Farm } from '@/lib/types'
 
 const STATUS_META: Record<CoverageStatus, { label: string; dot: string; cls: string }> = {
@@ -26,6 +26,16 @@ const STATUS_META: Record<CoverageStatus, { label: string; dot: string; cls: str
   over_reported:       { label: 'Over-reported',       dot: '🟡', cls: 'text-amber-700' },
   no_policy:           { label: 'No policy',           dot: '🔴', cls: 'text-red-700 font-semibold' },
   insured_not_planted: { label: 'Insured, not planted', dot: '🟡', cls: 'text-amber-700' },
+}
+
+// The export's color for each status — the same green / amber / red as `cls`.
+const STATUS_TONE: Record<CoverageStatus, 'favorable' | 'warning' | 'unfavorable'> = {
+  matched: 'favorable',
+  covered: 'favorable',
+  under_insured: 'warning',
+  over_reported: 'warning',
+  no_policy: 'unfavorable',
+  insured_not_planted: 'warning',
 }
 
 const ac = (n: number) => n.toLocaleString(undefined, { maximumFractionDigits: 1 })
@@ -163,12 +173,15 @@ export default function CoverageCheck({
     if (showVariance) cols.push({ label: 'Variance', align: 'right', format: 'acres' })
     cols.push({ label: 'Status' })
 
+    // Variance and status carry the screen's colors: red = uninsured acres,
+    // amber = review, green = matched / covered (a covered row's variance is
+    // informational, so it stays muted).
     const rowOf = (r: CoverageRow) => {
-      const cells: Array<string | number> = []
+      const cells: ExportCell[] = []
       if (multiEntity) cells.push(entityName(r.entityId))
       cells.push(cropName(r.cropId), countyName(r.countyId), PRACTICE_LABEL[r.practice], r.plantedAcres, r.insuredAcres, r.policyCount || '')
-      if (showVariance) cells.push(r.variance)
-      cells.push(STATUS_META[r.status].label + (r.coverageNote ? ` — ${r.coverageNote}` : ''))
+      if (showVariance) cells.push({ v: r.variance, tone: r.status === 'covered' || r.variance === 0 ? 'muted' : r.variance < 0 ? 'unfavorable' : 'warning' })
+      cells.push({ v: STATUS_META[r.status].label + (r.coverageNote ? ` — ${r.coverageNote}` : ''), tone: STATUS_TONE[r.status] })
       return cells
     }
     const sections: ExportPayload['sections'] = [{ title: 'Coverage by Combination', columns: cols, rows: sortRows(result.rows).map(rowOf) }]
@@ -192,12 +205,12 @@ export default function CoverageCheck({
 
     return {
       title: 'Coverage Check',
-      filters: `Crop year: ${cropYear}`,
+      filters: `${cropYear} Crop Year`,
       summary: [
         { label: 'Planted acres', value: formatNumber(result.summary.totalPlanted, 'acres') },
         { label: 'Insured acres', value: formatNumber(result.summary.totalInsured, 'acres') },
-        { label: 'Uninsured acres', value: formatNumber(result.summary.uninsuredAcres, 'acres'), tone: result.summary.uninsuredAcres > 0 ? 'unfavorable' : 'favorable' },
-        { label: 'Flagged', value: formatNumber(result.summary.flaggedCount, 'int') },
+        { label: 'Uninsured acres', value: formatNumber(result.summary.uninsuredAcres, 'acres'), tone: result.summary.uninsuredAcres > 0 ? 'unfavorable' : 'favorable', sub: 'planted with no/short policy' },
+        { label: 'Flagged', value: formatNumber(result.summary.flaggedCount, 'int'), tone: result.summary.flaggedCount > 0 ? 'warning' : 'favorable', sub: 'combinations needing review' },
       ],
       sections,
     }

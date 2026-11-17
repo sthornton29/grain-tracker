@@ -23,6 +23,7 @@ import {
   type CropProductionInput,
   type LeaseTermsShape,
 } from './rent-settlement'
+import { dumpExport } from '@/lib/export-dump'
 
 const THIRD = 100 / 3
 
@@ -239,5 +240,56 @@ describe('settlementExportPayload', () => {
     expect(flat).toContain('Landowner signature')
     const totalSection = payload.sections.find((s) => s.title === 'Amount due')!
     expect(totalSection.rows[0]).toContain(43_500)
+    expect(payload.summary?.[2]).toEqual({ label: 'Total due', value: '$43,500.00' })
+    // A one-third share (100 / 3) prints as 33.3333%, never 33.333333333333336%.
+    expect(payload.sections[0].rows[0]).toEqual(['Landowner share — 33.3333% of 30,000 bu @ $4.50/bu', 10_000, 4.5, 45_000, 'From farm records'])
+    expect(payload.sections[0].columns.map((c) => c.label)).toEqual(['Item', 'Bushels', 'Price ($/bu)', 'Amount', 'Source'])
+  })
+
+  it('the finished statement builds as an Excel sheet and a PDF (EXPORT_DUMP_DIR writes them out to look at)', async () => {
+    const result = buildSettlement({
+      terms: shareLease(), production: [corn()], totalAcres: 200,
+      gapValues: { 'expense|drying|Corn': 3000 },
+      cropYear: 2026, landownerName: 'Jones Family', generatedAt: '2026-08-14T12:00:00Z',
+    })
+    if (!result.ok) throw new Error('unexpected gaps')
+    const payload = settlementExportPayload({ statement: result.statement, landownerAddress: '100 River Rd\nDecatur, AL' })
+    const { xlsx, pdf } = await dumpExport('rent-settlement', {
+      ...payload,
+      branding: { mode: 'org', displayName: 'Sample Family Farms', logoUrl: null, addressLines: ['412 County Road 87', 'Moulton, AL 35650'], contactLine: '(256) 555-0142' },
+    })
+    expect(xlsx.byteLength).toBeGreaterThan(1000)
+    expect(pdf!.byteLength).toBeGreaterThan(1000)
+  })
+
+  it('the signature block shares the tables’ five columns, so one Excel sheet keeps its narrow number columns', () => {
+    const result = buildSettlement({
+      terms: shareLease(), production: [corn()], totalAcres: 200,
+      gapValues: { 'expense|drying|Corn': 3000 },
+      cropYear: 2026, landownerName: 'Jones Family', generatedAt: '2026-08-14T12:00:00Z',
+    })
+    if (!result.ok) throw new Error('unexpected gaps')
+    const payload = settlementExportPayload({ statement: result.statement })
+    expect(payload.singleSheet).toBe(true)
+    const ack = payload.sections.find((s) => s.title === 'Acknowledgment')!
+    expect(ack.columns).toHaveLength(payload.sections[0].columns.length)
+    // Only Item carries a width; a width on the second column would widen Bushels in every table.
+    expect(ack.columns.map((c) => c.width)).toEqual([52, undefined, undefined, undefined, undefined])
+    expect(ack.rows[2]).toEqual(['Landowner signature: ______________________________', '', '', '', 'Date: ______________'])
+    for (const s of payload.sections) for (const row of s.rows) expect(row).toHaveLength(s.columns.length)
+  })
+
+  it('a balance the landowner owes reads in parentheses on the headline card, as it does in the table', () => {
+    const terms = shareLease({ pricingMethod: { method: 'landowner_sells_own', reference: null } })
+    const result = buildSettlement({
+      terms, production: [corn()], totalAcres: 200,
+      gapValues: { 'expense|drying|Corn': 3000 },
+      cropYear: 2026, landownerName: 'Jones Family', generatedAt: '2026-08-14T12:00:00Z',
+    })
+    if (!result.ok) throw new Error('unexpected gaps')
+    expect(result.statement.bushelsOnly).toBe(true)
+    expect(result.statement.totalDue).toBe(-1_500)
+    const payload = settlementExportPayload({ statement: result.statement })
+    expect(payload.summary?.[2]).toEqual({ label: 'Balance', value: '($1,500.00)' })
   })
 })

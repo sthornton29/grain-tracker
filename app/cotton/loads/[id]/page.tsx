@@ -15,11 +15,12 @@ import CottonLoadDocument from '@/components/cotton/cotton-load-document'
 import { fmtInt } from '@/components/reports/report-kit'
 import { CottonPageHeader, GinnedPill, YieldFigure } from '@/components/cotton/cotton-page-header'
 import { useCottonFieldYields } from '@/lib/use-cotton-field-yields'
+import { lintEstimateChip } from '@/lib/cotton-field-yields'
 import { lbsPerRoll } from '@/lib/cotton-loads'
 import { rollsNum, updateCottonLoad } from '@/lib/cotton-load-writes'
 import { reportError } from '@/lib/friendly-error'
 import { fmtDate } from '@/lib/format-date'
-import type { ExportPayload, ExportSection } from '@/lib/exports'
+import type { ExportCell, ExportPayload, ExportSection, NumFmt } from '@/lib/exports'
 import type { CottonLoad, Entity, Farm, Field, Gin } from '@/lib/types'
 import { keptWithoutPlanting, scopeToPlanted } from '@/lib/planted-scope'
 
@@ -159,25 +160,51 @@ export default function CottonLoadDetailPage() {
     router.push('/cotton/loads')
   }
 
-  const KV: ExportSection['columns'] = [{ label: 'Field' }, { label: 'Value', align: 'right' }]
+  // The ticket as a file: weights and counts are real numbers, dates real
+  // dates, and anything not on the ticket is an empty cell. ("Item", not
+  // "Field" — a field is a piece of ground here.)
+  const KV: ExportSection['columns'] = [{ label: 'Item' }, { label: 'Value', align: 'right' }]
+  const qty = (v: number | string | null | undefined, format: NumFmt): ExportCell => (v == null ? '' : { v: Number(v), format })
+  const day = (iso: string | null | undefined): ExportCell => (iso ? { v: iso, format: 'date' } : '')
+  // The headline cards, as on the screen. The field's yield joins them when
+  // there is one to show, with its estimate flag spelled out.
+  const fieldYield = fieldYields.yieldFor(load.field_id)
+  const yieldChip = lintEstimateChip(fieldYield?.lintBasis)
   const payload: ExportPayload = {
     title: `Seed Cotton Load ${load.load_number}`,
     filters: sub,
     filename: `seed-cotton-load-${load.load_number}`,
     singleSheet: true,
+    summary: [
+      { label: 'Net seed cotton', value: load.net_weight != null ? `${fmtInt(Number(load.net_weight))} lbs` : '—' },
+      { label: 'Rolls', value: load.rolls != null ? fmtInt(load.rolls) : '—' },
+      { label: 'Lbs per roll', value: perRoll != null ? fmtInt(perRoll) : '—' },
+      { label: 'Status', value: ginned ? 'Ginned' : 'On the yard', tone: ginned ? 'favorable' : 'warning' },
+      ...(fieldYield?.lintPerAcre != null && fieldYields.acresFor(load.field_id) ? [{
+        label: `${field?.name_or_number ?? 'Field'} yield`,
+        value: `${fmtInt(Math.round(fieldYield.lintPerAcre))} lbs lint/ac`,
+        sub: yieldChip === 'est.' ? 'estimated' : yieldChip === 'part est.' ? 'part estimated' : undefined,
+      }] : []),
+    ],
     sections: [
       { title: 'Load & Logistics', columns: KV, rows: [
-        ['Load #', load.load_number], ['Crop year', String(load.crop_year)], ['Entity', entity?.name ?? '—'], ['Farm', farm?.name ?? '—'], ['Field', field?.name_or_number ?? '—'],
-        ['Picked', load.picked_date ? fmtDate(load.picked_date) : '—'], ['Delivered', load.delivered_date ? fmtDate(load.delivered_date) : '—'], ['Truck', load.truck ?? '—'], ['Gin', gin?.name ?? '—'],
-        ['Entered', load.source === 'document_import' ? 'from an uploaded ticket' : 'by hand'],
+        ['Load #', load.load_number], ['Crop year', String(load.crop_year)], ['Entity', entity?.name ?? ''], ['Farm', farm?.name ?? ''], ['Field', field?.name_or_number ?? ''],
+        ['Picked', day(load.picked_date)], ['Delivered', day(load.delivered_date)], ['Gin', gin?.name ?? ''],
+        ['Entered', load.source === 'document_import' ? 'from an uploaded ticket' : 'by hand'], ['Truck', load.truck ?? ''],
       ] },
       { title: 'Weights & Rolls', columns: KV, rows: [
-        ['Gross (lbs)', lbs(load.gross_weight)], ['Tare (lbs)', lbs(load.tare_weight)], ['Net seed cotton (lbs)', lbs(load.net_weight)],
-        ['Rolls', load.rolls != null ? fmtInt(load.rolls) : '—'], ['Lbs per roll', perRoll != null ? fmtInt(perRoll) : '—'],
+        ['Gross (lbs)', qty(load.gross_weight, 'lbs')], ['Tare (lbs)', qty(load.tare_weight, 'lbs')], ['Net seed cotton (lbs)', qty(load.net_weight, 'lbs')],
+        ['Rolls', qty(load.rolls, 'int')], ['Lbs per roll', qty(perRoll, 'lbs')],
       ] },
-      { title: 'Gin receipt', columns: KV, rows: ginned
-        ? receipts.map((r) => ['Statement of Ginning', `${r.receipt_date ? fmtDate(r.receipt_date) : 'undated'}${r.gin_id && ginById.get(r.gin_id) ? ` · ${ginById.get(r.gin_id)!.name}` : ''}`])
-        : [['Status', 'On the yard — not on a gin receipt yet']] },
+      ginned
+        ? { title: 'Gin receipt', columns: [
+            { label: 'Statement of Ginning', format: 'date' }, { label: 'Gin' },
+            { label: 'Bales', align: 'right', format: 'int' }, { label: 'Seed cotton on the statement (lbs)', align: 'right', format: 'lbs' },
+          ], rows: receipts.map((r) => [
+            r.receipt_date ?? 'Undated', (r.gin_id && ginById.get(r.gin_id)?.name) || '',
+            qty(r.bales_count, 'int'), qty(r.total_seed_cotton_weight, 'lbs'),
+          ]) }
+        : { title: 'Gin receipt', columns: KV, rows: [['Status', 'On the yard — not on a gin receipt yet']] },
       ...(load.notes ? [{ title: 'Notes', columns: KV, rows: [['Notes', load.notes]] } as ExportSection] : []),
     ],
   }

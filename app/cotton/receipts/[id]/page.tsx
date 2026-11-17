@@ -18,14 +18,14 @@ import { fmtInt, fmtPct } from '@/components/reports/report-kit'
 import { CottonPageHeader, YieldFigure } from '@/components/cotton/cotton-page-header'
 import CottonLoadDocument from '@/components/cotton/cotton-load-document'
 import { useCottonFieldYields } from '@/lib/use-cotton-field-yields'
-import { perAcre } from '@/lib/cotton-field-yields'
+import { lintEstimateChip, perAcre } from '@/lib/cotton-field-yields'
 import { lintTurnoutPct } from '@/lib/cotton'
 import { isSynthesizedReceiptNumber, receiptDisplayName, synthesizeReceiptNumber } from '@/lib/gin-statements'
 import { updateReceipt } from '@/lib/gin-receipt-writes'
 import { reportError } from '@/lib/friendly-error'
 import { fmtDate } from '@/lib/format-date'
 import { plural } from '@/components/use-dialogs'
-import type { ExportPayload, ExportSection } from '@/lib/exports'
+import type { ExportCell, ExportPayload, ExportSection, NumFmt } from '@/lib/exports'
 import type { CottonLoad, Entity, Farm, Field, Gin, GinReceipt } from '@/lib/types'
 import { keptWithoutPlanting, scopeToPlanted } from '@/lib/planted-scope'
 
@@ -198,30 +198,74 @@ export default function GinReceiptDetailPage() {
     refresh(); fieldYields.refresh()
   }
 
-  const KV: ExportSection['columns'] = [{ label: 'Field' }, { label: 'Value', align: 'right' }]
+  // The statement as a file: weights, counts and grades are real numbers,
+  // dates real dates, and anything the gin did not print is an empty cell.
+  // ("Item", not "Field" — a field is a piece of ground here.)
+  const KV: ExportSection['columns'] = [{ label: 'Item' }, { label: 'Value', align: 'right' }]
+  const qty = (v: number | string | null | undefined, format: NumFmt): ExportCell => (v == null ? '' : { v: Number(v), format })
+  const day = (iso: string | null | undefined): ExportCell => (iso ? { v: iso, format: 'date' } : '')
+  // The headline cards, as on the screen. The field's yield joins them when
+  // there is one to show, with its estimate flag spelled out.
+  const yieldChip = lintEstimateChip(fieldYield?.lintBasis)
+  const statementLintPerAcre = perAcre(r.total_bale_weight, acres)
   const payload: ExportPayload = {
     title: `Gin Receipt — ${title}`,
     filters: sub,
     filename: `gin-receipt-${(r.receipt_date ?? 'undated').replace(/-/g, '')}-${(field?.name_or_number ?? r.printed_field ?? 'statement').replace(/[^A-Za-z0-9]+/g, '-')}`,
     singleSheet: true,
+    summary: [
+      { label: 'Bales', value: bales.length > 0 ? fmtInt(bales.length) : r.bales_count != null ? fmtInt(r.bales_count) : '—', sub: bales.length > 0 ? (graded ? `${fmtInt(graded)} classed` : 'none classed yet') : 'from the statement' },
+      { label: 'Lint', value: r.total_bale_weight != null ? `${fmtInt(Number(r.total_bale_weight))} lbs` : '—', sub: bales.length > 0 && Math.abs(baleLint - Number(r.total_bale_weight ?? 0)) > 0.5 ? `bale list adds to ${fmtInt(baleLint)}` : undefined },
+      { label: 'Seed cotton', value: r.total_seed_cotton_weight != null ? `${fmtInt(Number(r.total_seed_cotton_weight))} lbs` : '—', sub: r.modules_count != null ? `${fmtInt(r.modules_count)} module${r.modules_count === 1 ? '' : 's'}` : undefined },
+      { label: 'Turnout', value: turnout != null ? fmtPct(turnout, 2) : '—' },
+      ...(r.field_id && fieldYield?.lintPerAcre != null && acres ? [{
+        label: `${field?.name_or_number ?? 'Field'} yield`,
+        value: `${fmtInt(Math.round(fieldYield.lintPerAcre))} lbs lint/ac`,
+        sub: yieldChip === 'est.' ? 'estimated' : yieldChip === 'part est.' ? 'part estimated' : undefined,
+      }] : []),
+      ...(r.field_id && fieldYield && statementLintPerAcre != null ? [{ label: 'This statement', value: `${fmtInt(Math.round(statementLintPerAcre))} lbs lint/ac` }] : []),
+    ],
     sections: [
       { title: 'Statement', columns: KV, rows: [
-        ['Gin', gin?.name ?? (ginCode ? `Gin ${ginCode}` : '—')], ['Gin code', ginCode ?? '—'], ['Statement #', statementNumber ?? 'none printed'], ['Date', r.receipt_date ? fmtDate(r.receipt_date) : '—'],
-        ['Crop year', String(r.crop_year)], ['Entity', entity?.name ?? '—'], ['Farm', farm?.name ?? '—'], ['Field', field?.name_or_number ?? '—'],
-        ['Printed farm #', r.printed_farm_number ?? '—'], ['Printed field', r.printed_field ?? '—'],
+        ['Gin', gin?.name ?? (ginCode ? `Gin ${ginCode}` : '')], ['Gin code', ginCode ?? ''], ['Date', day(r.receipt_date)], ['Statement #', statementNumber ?? 'none printed'],
+        ['Crop year', String(r.crop_year)], ['Entity', entity?.name ?? ''], ['Farm', farm?.name ?? ''], ['Farm # the gin printed', r.printed_farm_number ?? ''],
+        ['Field', field?.name_or_number ?? ''], ['Field the gin printed', r.printed_field ?? ''],
       ] },
       { title: 'Totals', columns: KV, rows: [
-        ['Modules', r.modules_count != null ? fmtInt(r.modules_count) : '—'], ['Seed cotton (lbs)', lbs(r.total_seed_cotton_weight)], ['Bales', r.bales_count != null ? fmtInt(r.bales_count) : '—'],
-        ['Lint (lbs)', lbs(r.total_bale_weight)], ['Avg bale (lbs)', lbs(r.avg_bale_weight)], ['Cottonseed (lbs)', lbs(r.seed_lbs)],
-        ['Turnout', turnout != null ? fmtPct(turnout, 2) : '—'], ['Seed cotton per 500-lb bale', lbs(r.lint_lbs_per_bale)],
+        ['Modules', qty(r.modules_count, 'int')], ['Seed cotton (lbs)', qty(r.total_seed_cotton_weight, 'lbs')], ['Bales', qty(r.bales_count, 'int')],
+        ['Lint (lbs)', qty(r.total_bale_weight, 'lbs')], ['Avg bale (lbs)', qty(r.avg_bale_weight, 'lbs')], ['Cottonseed (lbs)', qty(r.seed_lbs, 'lbs')],
+        ['Turnout', qty(turnout, 'pct1')], ['Seed cotton per 500-lb bale (lbs)', qty(r.lint_lbs_per_bale, 'lbs')],
       ] },
-      ...(hasYtd ? [{ title: 'Farm year to date (as printed)', columns: KV, rows: [
-        ['Modules', r.farm_ytd_modules != null ? fmtInt(r.farm_ytd_modules) : '—'], ['Seed cotton (lbs)', lbs(r.farm_ytd_seed_cotton_lbs)], ['Bales', r.farm_ytd_bales != null ? fmtInt(r.farm_ytd_bales) : '—'], ['Lint (lbs)', lbs(r.farm_ytd_bale_weight)],
+      ...(hasYtd ? [{ title: 'Farm year to date, as the gin printed it', columns: KV, rows: [
+        ['Modules', qty(r.farm_ytd_modules, 'int')], ['Seed cotton (lbs)', qty(r.farm_ytd_seed_cotton_lbs, 'lbs')], ['Bales', qty(r.farm_ytd_bales, 'int')], ['Lint (lbs)', qty(r.farm_ytd_bale_weight, 'lbs')],
       ] } as ExportSection] : []),
-      { title: 'Loads on this statement', columns: [{ label: 'Load #' }, { label: 'Field' }, { label: 'Rolls', align: 'right' }, { label: 'Net lbs', align: 'right' }],
-        rows: loadLinks.map((l) => [l.load.load_number, l.load.field_id ? fieldById.get(l.load.field_id)?.name_or_number ?? '—' : '—', l.load.rolls != null ? fmtInt(l.load.rolls) : '—', lbs(l.load.net_weight)]) },
-      { title: 'Bales', columns: [{ label: 'PBI' }, { label: 'Net lbs', align: 'right' }, { label: 'Grade' }, { label: 'Mic', align: 'right' }, { label: 'Staple', align: 'right' }, { label: 'Strength', align: 'right' }],
-        rows: bales.map((b) => [b.pbi_number, fmtInt(b.net_weight_lbs), b.grade?.composite_grade ?? '', b.grade?.micronaire != null ? String(b.grade.micronaire) : '', b.grade?.staple_32nds != null ? String(b.grade.staple_32nds) : '', b.grade?.strength_g_tex != null ? String(b.grade.strength_g_tex) : '']) },
+      { title: 'Loads on this statement',
+        columns: [{ label: 'Load #' }, { label: 'Field' }, { label: 'Delivered', format: 'date' }, { label: 'Rolls', align: 'right', format: 'int' }, { label: 'Net lbs', align: 'right', format: 'lbs' }],
+        rows: [
+          ...loadLinks.map((l): ExportCell[] => [
+            l.load.load_number, (l.load.field_id && fieldById.get(l.load.field_id)?.name_or_number) || '', l.load.delivered_date ?? '',
+            qty(l.load.rolls, 'int'), qty(l.load.net_weight, 'lbs'),
+          ]),
+          ...(loadLinks.length > 0 ? [['Total', '', '', '', loadNet] as ExportCell[]] : []),
+        ],
+        rowMeta: [...loadLinks.map(() => 'data' as const), ...(loadLinks.length > 0 ? ['total' as const] : [])] },
+      // Mic / staple / strength in the Bale Quality report's own formats.
+      { title: 'Bales',
+        columns: [
+          { label: 'PBI' }, { label: 'Net lbs', align: 'right', format: 'lbs' }, { label: 'Grade' },
+          { label: 'Mic', align: 'right', format: 'dec2' }, { label: 'Staple', align: 'right', format: 'dec1' }, { label: 'Strength', align: 'right', format: 'dec1' },
+          { label: 'Classed', format: 'date' },
+        ],
+        rows: [
+          ...bales.map((b): ExportCell[] => [
+            b.pbi_number, b.net_weight_lbs,
+            b.grade?.composite_grade ?? (b.grade?.color_grade ? `${b.grade.color_grade}${b.grade.leaf_grade ? `-${b.grade.leaf_grade}` : ''}` : ''),
+            qty(b.grade?.micronaire, 'dec2'), qty(b.grade?.staple_32nds, 'dec1'), qty(b.grade?.strength_g_tex, 'dec1'),
+            b.grade?.class_date ?? (b.grade ? 'Yes' : ''),
+          ]),
+          ...(bales.length > 0 ? [['Total', baleLint, '', '', '', '', ''] as ExportCell[]] : []),
+        ],
+        rowMeta: [...bales.map(() => 'data' as const), ...(bales.length > 0 ? ['total' as const] : [])] },
       ...(r.notes ? [{ title: 'Notes', columns: KV, rows: [['Notes', r.notes]] } as ExportSection] : []),
     ],
   }

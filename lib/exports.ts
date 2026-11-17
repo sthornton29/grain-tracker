@@ -20,7 +20,7 @@
 // pays the download cost. Print uses the browser dialog + the `.print-area` /
 // `.no-print` CSS in app/globals.css.
 
-import { exportChrome, type ExportBranding } from '@/lib/branding'
+import { exportChrome, type ExportBranding, type ExportChrome } from '@/lib/branding'
 import {
   columnLetters, evaluateFormula, toExcelFormula, FormulaError,
   type FormulaData, type FormulaLayout, type FormulaNode, type Scalar,
@@ -36,12 +36,19 @@ import {
 //   acres (any) ................. 'acres' (1 dec)
 //   yield (bu/ac) ............... 'yield' (1 dec)
 //   $/bu prices ................. 'price' ($, 2 dec)
+//   a contract's own price terms  'price4' ($, 4 dec — futures, basis and cash
+//                                          price as the contract states them:
+//                                          grain trades in quarter cents, and a
+//                                          $/lb program rate needs the places)
 //   whole-dollar totals ......... 'usd0'  (revenue, cost, profit, indemnity, payments…)
 //   trading P&L (with cents) .... 'usd2'  (hedging — matches its on-screen cents)
 //   counts / weights (lb) ....... 'int'
 //   moisture .................... 'dec1'
 //   option premium (cents) ...... 'dec2'
 //   percentages ................. 'pct0' / 'pct1'
+//   calendar dates .............. 'date'  (an ISO 'YYYY-MM-DD' string in the
+//                                          payload; a REAL date in Excel shown
+//                                          m/d/yyyy, '9/24/2026' in the PDF)
 //   audit-workbook bushels ...... 'bu3'   (3 dec — load-level dry bushels and the
 //                                          totals that sum them, so a fractional
 //                                          bushel never hides behind a 0-dec format)
@@ -62,6 +69,7 @@ export type NumFmt =
   | 'usd0' // $1,234
   | 'usd2' // $1,234.56
   | 'price' // $4.93 ($/bu, 2 decimals)
+  | 'price4' // $4.8525 (a contract's futures / basis / cash price, a $/lb rate — 4 decimals)
   | 'cents' // a ¢/lb-STORED cotton price displayed as $/lb: 72.65 → $0.7265
   | 'bu' // 45,000 bushels (0 decimals)
   | 'bu2' // 1,000.00 bushels (2 decimals — audit load rows)
@@ -74,6 +82,7 @@ export type NumFmt =
   | 'yield' // 182.5 bu/ac (1 decimal)
   | 'pct0' // 86%
   | 'pct1' // 86.5%
+  | 'date' // an ISO 'YYYY-MM-DD' STRING: a real Excel date (m/d/yyyy), '9/24/2026' in the PDF
 
 export type Tone = 'favorable' | 'unfavorable' | 'warning' | 'muted' | 'neutral'
 
@@ -89,6 +98,11 @@ export type ExportColumn = {
   format?: NumFmt
   /** Excel column width override, in characters. */
   width?: number
+  /** Excel: wrap text longer than the column (the row grows to fit). Default
+   *  true — a long note never hides behind the next column or falls off the
+   *  printed page. `false` keeps one line (the text runs on to the right when
+   *  the cells beside it are empty). */
+  wrap?: boolean
   /** What the column means (and, for a formula column, the formula in words).
    *  NOT written as an Excel comment — comment popups cover the data — a
    *  report that wants these visible lists them on its own notes sheet. */
@@ -124,16 +138,33 @@ export type ExportSection = {
   title?: string
   /** Stable key formulas refer to this section (sheet) by. */
   key?: string
-  /** Excel: a plain data table — no title block; the header sits on row 1
-   *  (row 2 under a `note`), frozen, with an autofilter over the data. */
+  /** Excel: a plain data table — no automatic title block (the section brings
+   *  its own short `prelude`); the header is frozen with an autofilter over
+   *  the data. */
   plain?: boolean
   /** Excel (plain sections): one explanatory line above the header. */
   note?: string
-  /** Excel (plain sections): rows above the note/header — title block, KPIs, links. */
+  /** Excel (plain sections): rows above the note/header — a title, one line
+   *  of context, a link back. KEEP IT SHORT: everything above the header is
+   *  frozen with it, and a sheet whose header sits below row MAX_FROZEN_ROWS
+   *  is refused (lib/export-layout.test.ts). KPI strips, contents lists and
+   *  long explanations belong in `postlude`, under the table. */
   prelude?: PreludeRow[]
+  /** Excel: rows written UNDER the table after a blank row — contents links,
+   *  KPIs, footnotes. They scroll with the data and never eat frozen space.
+   *  Formula cells may refer to other sections by `cell`/`col` (never `self`). */
+  postlude?: PreludeRow[]
+  /** Excel: the filter buttons on the header row. Default: on for `plain`
+   *  sections (flat lists a reader sorts and filters), off otherwise. */
+  autoFilter?: boolean
+  /** Excel: light banding on alternate data rows (default true). */
+  banded?: boolean
   /** Excel: the sheet tab color (ARGB). */
   tabColor?: string
-  /** Excel: how many leading columns stay frozen beside the header row (default 1). */
+  /** Excel: how many leading columns stay frozen beside the data — the ones
+   *  that identify a row (Farm + Field, Date + Ticket). Default: the first
+   *  column of a table too wide for one screen, none otherwise. Always capped
+   *  so the frozen strip never exceeds MAX_FROZEN_WIDTH characters. */
   freezeColumns?: number
   columns: ExportColumn[]
   rows: ExportCell[][]
@@ -185,7 +216,7 @@ function group(n: number, minDec: number, maxDec: number): string {
 // parentheses. `fmt` omitted → inference: thousands separators, up to 2 decimals.
 export function formatNumber(value: number, fmt?: NumFmt): string {
   if (!Number.isFinite(value)) return ''
-  if (fmt === 'text') return String(value)
+  if (fmt === 'text' || fmt === 'date') return String(value)
   const neg = value < 0
   const a = Math.abs(value)
   let body: string
@@ -214,6 +245,8 @@ export function formatNumber(value: number, fmt?: NumFmt): string {
     case 'usd2':
     case 'price':
       body = '$' + group(a, 2, 2); break
+    case 'price4':
+      body = '$' + group(a, 4, 4); break
     case 'cents': // a ¢/lb-stored cotton price, DISPLAYED as $/lb (÷100, 4dp)
       body = '$' + group(a / 100, 4, 4); break
     case 'pct0':
@@ -232,6 +265,7 @@ export function formatNumber(value: number, fmt?: NumFmt): string {
 export function excelNumFmt(fmt?: NumFmt): string | undefined {
   switch (fmt) {
     case 'text': return undefined
+    case 'date': return 'm/d/yyyy'
     case 'int':
     case 'bu':
     case 'lbs': return '#,##0;(#,##0)'
@@ -247,6 +281,7 @@ export function excelNumFmt(fmt?: NumFmt): string | undefined {
     case 'usd0': return '$#,##0;($#,##0)'
     case 'usd2':
     case 'price': return '$#,##0.00;($#,##0.00)'
+    case 'price4':
     case 'cents': return '$#,##0.0000;($#,##0.0000)'
     case 'pct0': return '#,##0"%";(#,##0"%")'
     case 'pct1': return '#,##0.0"%";(#,##0.0"%")'
@@ -265,7 +300,7 @@ function normCell(cell: ExportCell): NormCell {
 /** Does any section carry a formula cell? */
 export function payloadHasFormulas(payload: ExportPayload): boolean {
   const has = (c: ExportCell) => c != null && typeof c === 'object' && c.f != null
-  return payload.sections.some((s) => s.rows.some((r) => r.some(has)) || (s.prelude ?? []).some((p) => p.cells.some(has)))
+  return payload.sections.some((s) => s.rows.some((r) => r.some(has)) || [...(s.prelude ?? []), ...(s.postlude ?? [])].some((p) => p.cells.some(has)))
 }
 
 /** Sanitize + de-duplicate worksheet names exactly as the Excel writer does
@@ -273,7 +308,16 @@ export function payloadHasFormulas(payload: ExportPayload): boolean {
 function resolveSheetNames(payload: ExportPayload): string[] {
   const used = new Set<string>()
   const take = (desired: string, fallback: string): string => {
-    const base = desired.replace(/[\\/?*[\]:]/g, '-').trim().slice(0, 31) || fallback
+    // Cut to Excel's 31 characters at a word — "Rent Settlement — 2026 Crop",
+    // never "…2026 Crop Yea" — and never leave a dangling separator
+    // ("North 40 · Corn ·").
+    const clean = desired.replace(/[\\/?*[\]:]/g, '-').trim()
+    let cut = clean.slice(0, 31)
+    if (clean.length > 31 && !/\s/.test(clean.charAt(31))) {
+      const at = cut.lastIndexOf(' ')
+      if (at >= 12) cut = cut.slice(0, at)
+    }
+    const base = cut.replace(/[\s·—–,;-]+$/, '') || fallback
     let name = base
     for (let n = 2; used.has(name.toLowerCase()); n++) {
       const suffix = ` (${n})`
@@ -282,13 +326,14 @@ function resolveSheetNames(payload: ExportPayload): string[] {
     used.add(name.toLowerCase())
     return name
   }
-  const multi = !payload.singleSheet && payload.sections.length > 1
-  if (multi && payload.summary?.length) take('Summary', 'Summary')
+  if (!payload.singleSheet && payload.summary?.length) take('Summary', 'Summary')
   if (payload.singleSheet) {
     const one = take(payload.title, 'Report')
     return payload.sections.map(() => one)
   }
-  return payload.sections.map((section, i) => take(section.title || `Sheet ${i + 1}`, `Sheet ${i + 1}`))
+  // A lone untitled table is named for its report, never "Sheet 1".
+  const lone = payload.sections.length === 1
+  return payload.sections.map((section, i) => take(section.title || (lone ? payload.title : `Sheet ${i + 1}`), `Sheet ${i + 1}`))
 }
 
 /** The physical row the section's column header lands on, given how the
@@ -296,12 +341,12 @@ function resolveSheetNames(payload: ExportPayload): string[] {
 function headerRowOf(payload: ExportPayload, section: ExportSection): number {
   let row = 0
   if (!section.plain) {
-    const chrome = exportChrome(payload.branding)
-    row += 1 + chrome.headerLines.length + (payload.filters ? 1 : 0) + 1 + 1 // title, chrome, filters, generated, blank
-    if (section.title) row += 1
+    // Title, the context line (two in org mode: the letterhead line first), a thin spacer.
+    row += 1 + (exportChrome(payload.branding).headerLines.length > 0 ? 2 : 1) + 1
   } else {
-    row += (section.prelude ?? []).length
-    if (section.note) row += 1
+    // The section's own short title block, its note, then the same thin spacer.
+    const above = (section.prelude ?? []).length + (section.note ? 1 : 0)
+    row += above > 0 ? above + 1 : 0
   }
   if (section.groups && section.groups.length > 0) row += 1
   return row + 1
@@ -357,7 +402,8 @@ export function evaluatePayload(payload: ExportPayload): Record<string, Array<Ar
   for (const section of payload.sections) {
     if (!section.key) continue
     const key = section.key
-    for (const pr of section.prelude ?? []) {
+    // The rows above a table and the rows under it (a KPI strip, a check line).
+    for (const pr of [...(section.prelude ?? []), ...(section.postlude ?? [])]) {
       for (const raw of pr.cells) {
         const n = normCell(raw)
         if (!n.f || raw == null || typeof raw !== 'object') continue
@@ -394,7 +440,15 @@ export function formulaTextOf(payload: ExportPayload, sectionKey: string, rowInd
 function cellText(raw: string | number | null, fmt?: NumFmt): string {
   if (raw == null) return ''
   if (typeof raw === 'number') return formatNumber(raw, fmt)
+  if (fmt === 'date') return formatDateText(raw)
   return String(raw)
+}
+
+/** '2026-09-24' (or an ISO timestamp) → '9/24/2026', the app's one date
+ *  style (lib/format-date); anything else passes through unchanged. */
+export function formatDateText(raw: string): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(raw)
+  return m ? `${Number(m[2])}/${Number(m[3])}/${m[1]}` : raw
 }
 
 export function defaultFilename(title: string): string {
@@ -425,26 +479,62 @@ const toneArgb = (t: Tone) => 'FF' + TONE_RGB[t].map((n) => n.toString(16).padSt
 
 // ---------- Excel (exceljs — real numbers, number formats, styling) ----------
 //
-// DESIGN DEFAULTS (every export):
-//   * one font family (Calibri 11; titles 16 bold; section heads 12 bold)
-//   * header rows: forest fill, white bold wrapped text, ~30 high (no Excel
-//     comments on headers — their popups cover the data)
+// THE LAYOUT CONTRACT — every sheet of every export, pinned by
+// lib/export-layout.test.ts. A reader opens the file and sees the numbers:
+//
+//   * THE TABLE STARTS AT THE TOP. Above its header sit a title, one or two
+//     muted lines of context (filters, when it was generated, the farm's
+//     letterhead line) and a thin spacer — nothing else. KPI strips, contents
+//     lists and explanations go UNDER the table (`postlude`) or on their own
+//     sheet, where they scroll with the data.
+//   * FREEZE PANES hold exactly that and no more: the title block plus the
+//     header row(s) — never more than MAX_FROZEN_ROWS rows — and, beside the
+//     data, only the column(s) that identify a row, never wider than
+//     MAX_FROZEN_WIDTH characters and only when the table is too wide for one
+//     screen. A sheet that stacks several tables freezes nothing: no single
+//     header row is true for the whole sheet. The sheet opens with the cursor
+//     on the first data cell.
+//   * BLANK MEANS EMPTY. A blank cell is written with no value at all (never
+//     an empty string), so long text runs on across it, centered group
+//     headings center, and COUNTA / Ctrl+Arrow behave.
+//   * one font family (Calibri 11; sheet titles 14 bold; stacked-table heads
+//     12 bold)
+//   * header rows: forest fill, white bold wrapped text, as tall as their
+//     longest label needs; a numeric column's header is right-aligned over
+//     its numbers; filter buttons never cover a label
+//   * column widths fitted to the longest header word or value; long text
+//     wraps inside its column (the row grows) instead of being cut off
 //   * thin light-gray horizontal rules only; subtotal rows light green + bold;
-//     grand totals bold with a double top border
-//   * banding through a conditional format (=MOD(ROW(),2)=0) so it survives
-//     sorting and filtering; gridlines off on every sheet
-//   * no merged cells inside a table — spanning group headers use Center
-//     Across Selection — so sort and filter always work
+//     grand totals bold with a double top border; banding on plain data rows
+//     only, through a conditional format so it survives sorting
+//   * no merged cells — spanning group headers use Center Across Selection —
+//     so sort and filter always work
+//   * a number with no declared format shows as a whole number or with up to
+//     two decimals, never with a stray trailing point
 //   * inputs blue, formulas black; check columns green on OK, red on CHECK
-//   * column widths fitted to the longest header or value, capped; freeze the
-//     header row (and the identifying columns a section names)
-//   * print-ready: landscape, fit to one page wide, header rows repeated,
-//     narrow margins, print area, a footer with the page number
+//   * no green "number stored as text" / "inconsistent formula" corner flags
+//     (ticket and FSA numbers are text on purpose)
+//   * print-ready: portrait when the table fits, landscape otherwise, fit to
+//     one page wide, header rows repeated, narrow margins, a footer with the
+//     page number
 //   * document properties (title / subject / company / created); the first
-//     sheet opens active at A1
-// Report-specific layout (title blocks, KPI strips, contents links, sort
-// orders) is expressed through a section's `prelude` rows and stays in the
-// report's own builder.
+//     sheet opens active
+// Report-specific layout (a title, a line of context, a link back, the sort
+// order) is expressed through a section's `prelude` / `postlude` rows and
+// stays in the report's own builder.
+
+/** Most rows a sheet may freeze above its data (title block + header rows). */
+export const MAX_FROZEN_ROWS = 6
+/** Most column width, in characters, a sheet may freeze beside its data. */
+export const MAX_FROZEN_WIDTH = 46
+/** A table narrower than this fits one screen: no column is frozen by default. */
+const ONE_SCREEN_WIDTH = 110
+/** A table narrower than this prints portrait. */
+const PORTRAIT_WIDTH = 100
+/** Text columns grow to this many characters, then wrap. */
+const TEXT_WIDTH_CAP = 50
+/** One line of Calibri 11, in points. */
+const LINE_PT = 15
 
 function browserDownload(blob: Blob, filename: string): void {
   if (typeof document === 'undefined') return
@@ -462,6 +552,7 @@ function browserDownload(blob: Blob, filename: string): void {
 type Ws = any
 
 const FONT = 'Calibri'
+const TITLE_ARGB = 'FF0B4A24' // brand forest
 const INPUT_FONT_ARGB = 'FF0000FF' // blue — a value straight from a Turnrow record
 const LINK_FONT_ARGB = 'FF256F35' // brand deep green
 const RULE_ARGB = 'FFD9D9D9' // light-gray horizontal rules
@@ -482,57 +573,154 @@ function withZeroDash(fmt: string | undefined, zeroAsDash: boolean | undefined):
   return fmt.split(';').length === 1 ? `${fmt};(${fmt});"–"` : `${fmt};"–"`
 }
 
-/** Column widths fitted to the longest header line or formatted value. */
-function excelColWidths(section: ExportSection): number[] {
+/** 'Generated 11/17/2026 9:16 AM' — the same stamp on every sheet of a file. */
+function generatedStamp(d: Date): string {
+  const hh = d.getHours()
+  const h12 = hh % 12 === 0 ? 12 : hh % 12
+  return `Generated ${d.getMonth() + 1}/${d.getDate()}/${d.getFullYear()} ${h12}:${String(d.getMinutes()).padStart(2, '0')} ${hh < 12 ? 'AM' : 'PM'}`
+}
+
+/** The muted line(s) under a sheet title. Org-branded documents lead with the
+ *  farm's own letterhead line; then the filters and when the file was made. */
+function contextLines(payload: ExportPayload, chrome: ExportChrome, now: Date): string[] {
+  const letterhead = chrome.headerLines.length > 0
+  const lines: string[] = []
+  if (letterhead) lines.push([chrome.attributionPrefix, ...chrome.headerLines].join(' · '))
+  lines.push([payload.filters, generatedStamp(now), letterhead ? null : chrome.attributionPrefix].filter(Boolean).join(' · '))
+  return lines
+}
+
+/** The title on a sheet: the report, plus the section when there are several
+ *  to tell apart. A report with one table is titled for the report alone (its
+ *  section title only names the tab). */
+function sheetTitleOf(payload: ExportPayload, section: ExportSection | null): string {
+  const t = section?.title?.trim()
+  if (!t || payload.sections.length < 2 || payload.title.toLowerCase().includes(t.toLowerCase())) return payload.title
+  return `${payload.title} — ${t}`
+}
+
+/** Is this column a column of quantities (right-aligned, header and all)? */
+function isNumericColumn(section: ExportSection, i: number): boolean {
+  const c = section.columns[i]
+  if (!c) return false
+  if (c.align) return c.align === 'right'
+  if (c.format) return c.format !== 'text' && c.format !== 'date'
+  let nums = 0
+  let texts = 0
+  section.rows.forEach((row, ri) => {
+    if (section.rowMeta?.[ri] === 'subhead') return
+    const n = normCell(row[i] ?? null)
+    if (n.format === 'text' || n.format === 'date') { texts++; return }
+    if (typeof n.raw === 'number' || n.f != null) nums++
+    else if (n.raw != null && n.raw !== '') texts++
+  })
+  return nums > 0 && texts * 4 <= nums
+}
+
+/** Lines a text takes when wrapped at whole words into `width` characters. */
+function wrappedLines(text: string, width: number): number {
+  const cap = Math.max(4, Math.floor(width))
+  let lines = 0
+  for (const para of text.split(/\r?\n/)) {
+    let used = 0
+    lines++
+    for (const word of para.split(/\s+/).filter(Boolean)) {
+      if (used === 0) { used = word.length; lines += Math.floor((word.length - 1) / cap); used = ((word.length - 1) % cap) + 1; continue }
+      if (used + 1 + word.length <= cap) { used += 1 + word.length; continue }
+      lines += 1 + Math.floor((word.length - 1) / cap)
+      used = ((word.length - 1) % cap) + 1
+    }
+  }
+  return lines
+}
+
+/** Column widths fitted to the longest header word or formatted value.
+ *  `filtered` leaves room for the filter button beside every label. */
+function excelColWidths(section: ExportSection, filtered: boolean): number[] {
   const headerLen = (label: string) => Math.max(...label.split(/\s+/).map((w) => w.length), Math.min(label.length, 18))
-  const widths = section.columns.map((c) => c.width ?? headerLen(c.label) + 2)
-  // KPI labels and link rows above the header must read in full too.
-  for (const pr of section.prelude ?? []) {
-    if (pr.kind !== 'kpi' && pr.kind !== 'links') continue
+  const widths = section.columns.map((c) => c.width ?? headerLen(c.label) + (filtered ? 5 : 2))
+  // A KPI strip (label / value pairs side by side) must read in full too.
+  // Titles, text and link rows never set a width: they run on across the row.
+  for (const pr of [...(section.prelude ?? []), ...(section.postlude ?? [])]) {
+    if (pr.kind !== 'kpi') continue
     pr.cells.forEach((cell, i) => {
-      if (section.columns[i]?.width != null) return
+      if (i >= section.columns.length || section.columns[i]?.width != null) return
       const { raw, format } = normCell(cell)
       // KPI values are written at 14 pt bold: allow half again the characters.
-      const len = Math.ceil(cellText(raw, format).length * (pr.kind === 'kpi' && i % 2 === 1 ? 1.6 : 1))
+      const len = Math.ceil(cellText(raw, format).length * (i % 2 === 1 ? 1.6 : 1))
       if (len + 2 > (widths[i] ?? 0)) widths[i] = len + 2
     })
   }
-  for (const row of section.rows) {
+  section.rows.forEach((row, ri) => {
+    // A group label runs on across its row; it never sets a column's width.
+    if (section.rowMeta?.[ri] === 'subhead') return
     row.forEach((cell, i) => {
-      if (section.columns[i]?.width != null) return
+      if (i >= section.columns.length || section.columns[i]?.width != null) return
       const { raw, format } = normCell(cell)
       const len = cellText(raw, format ?? section.columns[i]?.format).length
       if (len + 2 > (widths[i] ?? 0)) widths[i] = len + 2
     })
-  }
-  return widths.map((w) => Math.min(60, Math.max(8, w)))
+  })
+  return widths.map((w, i) => (section.columns[i]?.width != null ? w : Math.min(TEXT_WIDTH_CAP, Math.max(8, w))))
+}
+
+/** How many leading columns a sheet freezes (see the layout contract). */
+function frozenColumnCount(section: ExportSection, widths: number[]): number {
+  const ncols = section.columns.length
+  const total = widths.reduce((a, w) => a + w, 0)
+  let want = section.freezeColumns ?? (total > ONE_SCREEN_WIDTH ? 1 : 0)
+  want = Math.max(0, Math.min(want, ncols - 1))
+  while (want > 0 && widths.slice(0, want).reduce((a, w) => a + w, 0) > MAX_FROZEN_WIDTH) want--
+  return want
 }
 
 function fontFor(extra: Record<string, unknown> = {}): Record<string, unknown> {
   return { name: FONT, size: 11, ...extra }
 }
 
-/** Write one cell's value (formula / hyperlink / plain), returning what exceljs got. */
+const ISO_DATE_CELL = /^(\d{4})-(\d{2})-(\d{2})/
+const isDateCell = (n: NormCell, fmt: NumFmt | undefined): boolean => fmt === 'date' && typeof n.raw === 'string' && ISO_DATE_CELL.test(n.raw)
+
+/** Write one cell's value (formula / hyperlink / date / plain), as exceljs takes it.
+ *  A blank is `null` — a cell with no value — never an empty string. */
 function cellValueFor(n: NormCell, fmt: NumFmt | undefined, formulaText: string | null): unknown {
   if (formulaText != null) {
     const result = n.raw == null ? undefined : typeof n.raw === 'number' && fmt === 'cents' ? n.raw / 100 : n.raw
     return result === undefined ? { formula: formulaText } : { formula: formulaText, result }
   }
+  if (isDateCell(n, fmt)) {
+    const m = ISO_DATE_CELL.exec(n.raw as string)!
+    // UTC midnight: exceljs converts by UTC, so the serial is the calendar day.
+    return new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])))
+  }
   // 'cents' carries ¢/lb-stored cotton prices displayed as $/lb: the REAL
   // number written to the sheet is the $ value (÷100) so the $ numFmt and
   // any user math read correctly.
-  const value = typeof n.raw === 'number' ? (fmt === 'cents' ? n.raw / 100 : n.raw) : (n.raw ?? '')
+  const value = typeof n.raw === 'number' ? (fmt === 'cents' ? n.raw / 100 : n.raw) : n.raw
+  if (value == null || value === '') return null
   if (n.link) return { text: String(value), hyperlink: n.link }
   return value
 }
 
-function styleCell(xcell: any, n: NormCell, fmt: NumFmt | undefined, zeroAsDash: boolean | undefined, align: 'left' | 'right' | undefined): void { // eslint-disable-line @typescript-eslint/no-explicit-any
-  const numeric = typeof n.raw === 'number' || (n.f != null && fmt != null && fmt !== 'text')
-  if (numeric) {
-    xcell.numFmt = withZeroDash(excelNumFmt(fmt), zeroAsDash)!
+/** The number format a numeric cell is written with. With no declared format
+ *  a whole number shows whole — '#,##0.##' alone would print "88,320." */
+function numFmtForCell(fmt: NumFmt | undefined, raw: string | number | null): string | undefined {
+  if (fmt == null && typeof raw === 'number' && Number.isInteger(raw)) return '#,##0;(#,##0)'
+  return excelNumFmt(fmt)
+}
+
+function styleCell(xcell: any, n: NormCell, fmt: NumFmt | undefined, zeroAsDash: boolean | undefined, align: 'left' | 'right' | undefined, wrap = false): void { // eslint-disable-line @typescript-eslint/no-explicit-any
+  const label = fmt === 'text' || fmt === 'date' // a year, a date: an identifier, not a quantity
+  const numeric = !label && (typeof n.raw === 'number' || (n.f != null && fmt != null))
+  if (isDateCell(n, fmt)) {
+    xcell.numFmt = 'm/d/yyyy'
+    xcell.alignment = { horizontal: align === 'right' ? 'right' : 'left', vertical: 'top' }
+  } else if (numeric) {
+    const code = withZeroDash(numFmtForCell(fmt, n.raw), zeroAsDash)
+    if (code) xcell.numFmt = code
     xcell.alignment = { horizontal: 'right', vertical: 'top' }
   } else {
-    xcell.alignment = { horizontal: align === 'right' ? 'right' : 'left', vertical: 'top' }
+    xcell.alignment = { horizontal: align === 'right' ? 'right' : 'left', vertical: 'top', wrapText: wrap }
   }
   if (n.tone && n.tone !== 'neutral') xcell.font = fontFor({ color: { argb: toneArgb(n.tone) } })
   else if (n.input) xcell.font = fontFor({ color: { argb: INPUT_FONT_ARGB } })
@@ -540,96 +728,107 @@ function styleCell(xcell: any, n: NormCell, fmt: NumFmt | undefined, zeroAsDash:
   else xcell.font = fontFor()
 }
 
-function writeExcelSection(ws: Ws, payload: ExportPayload, section: ExportSection, opts: { withTitle: boolean; layout?: FormulaLayout }): void {
+type FormulaCtx = { layout?: FormulaLayout; key?: string }
+
+/** Rows outside the table — a section's prelude (above the header) or
+ *  postlude (under the data): titles, context, KPIs, links. */
+function writeExtraRows(ws: Ws, rows: PreludeRow[], section: ExportSection, zeroAsDash: boolean | undefined, fx: FormulaCtx): void {
+  for (const pr of rows) {
+    if (pr.kind === 'blank') { ws.addRow([]); continue }
+    const cells = pr.cells.map(normCell)
+    const values = cells.map((n, i) => {
+      const fmt = n.format ?? section.columns[i]?.format
+      let formulaText: string | null = null
+      if (n.f) {
+        if (!fx.layout || !fx.key) throw new Error('formula cells need a keyed section and a resolved layout')
+        formulaText = toExcelFormula(n.f, { layout: fx.layout, at: { s: fx.key, r: -1 } })
+      }
+      return cellValueFor(n, fmt, formulaText)
+    })
+    const r = ws.addRow(values)
+    cells.forEach((n, i) => {
+      const xcell = r.getCell(i + 1)
+      const fmt = n.format ?? section.columns[i]?.format
+      styleCell(xcell, n, fmt, zeroAsDash, undefined)
+      if (pr.kind === 'title') xcell.font = fontFor({ size: 14, bold: true, color: { argb: n.link ? LINK_FONT_ARGB : TITLE_ARGB } })
+      else if (pr.kind === 'subtitle') xcell.font = fontFor({ size: 12, bold: true })
+      else if (pr.kind === 'text') xcell.font = fontFor({ color: { argb: n.link ? LINK_FONT_ARGB : MUTED_ARGB }, underline: !!n.link })
+      else if (pr.kind === 'kpi') xcell.font = i % 2 === 0 ? fontFor({ bold: true, color: { argb: MUTED_ARGB } }) : fontFor({ size: 14, bold: true, color: { argb: n.input ? INPUT_FONT_ARGB : TITLE_ARGB } })
+      else if (pr.kind === 'links') xcell.font = i === 0 || n.link ? fontFor({ color: { argb: LINK_FONT_ARGB }, underline: !!n.link }) : fontFor({ color: { argb: MUTED_ARGB } })
+      if (n.f && n.raw === 0) xcell.model.result = 0
+    })
+    if (pr.kind === 'title') r.height = 22
+  }
+}
+
+/** The title block of a titled sheet: title, context line(s), a thin spacer. */
+function writeTitleBlock(ws: Ws, title: string, context: string[]): void {
+  ws.addRow([title])
+  ws.lastRow.font = fontFor({ bold: true, size: 14, color: { argb: TITLE_ARGB } })
+  ws.lastRow.height = 22
+  for (const line of context) {
+    ws.addRow([line])
+    ws.lastRow.font = fontFor({ color: { argb: MUTED_ARGB }, size: 10 })
+  }
+  ws.addRow([])
+  ws.lastRow.height = 6
+}
+
+type TableLayout = { groupRow: number | null; headerRow: number; firstDataRow: number; lastDataRow: number }
+
+/** Write one table — spanning group row, header row, data rows — at the
+ *  sheet's next row, with `widths` already decided (wrapping depends on them). */
+function writeTable(ws: Ws, payload: ExportPayload, section: ExportSection, widths: number[], opts: { layout?: FormulaLayout; filtered: boolean; headless?: boolean }): TableLayout {
   const chrome = exportChrome(payload.branding)
   const zeroAsDash = payload.excel?.zeroAsDash
-  const expectedHeaderRow = opts.withTitle || section.plain ? headerRowOf(payload, section) : null
   const ncols = section.columns.length
-  const formulaCtxAt = (r: number) => ({ layout: opts.layout!, at: { s: section.key!, r } })
-  const requireLayout = () => {
-    if (!opts.layout || !section.key) throw new Error('formula cells need a keyed section and a resolved layout')
-  }
-
-  if (section.plain) {
-    // Report-specific title block / KPI strip / contents links.
-    for (const pr of section.prelude ?? []) {
-      if (pr.kind === 'blank') { ws.addRow([]); continue }
-      const cells = pr.cells.map(normCell)
-      const values = cells.map((n, i) => {
-        const fmt = n.format ?? section.columns[i]?.format
-        let formulaText: string | null = null
-        if (n.f) { requireLayout(); formulaText = toExcelFormula(n.f, formulaCtxAt(-1)) }
-        return cellValueFor(n, fmt, formulaText)
-      })
-      const r = ws.addRow(values)
-      cells.forEach((n, i) => {
-        const xcell = r.getCell(i + 1)
-        const fmt = n.format ?? section.columns[i]?.format
-        styleCell(xcell, n, fmt, zeroAsDash, undefined)
-        if (pr.kind === 'title') xcell.font = fontFor({ size: 16, bold: true, color: { argb: n.link ? LINK_FONT_ARGB : 'FF0B4A24' } })
-        else if (pr.kind === 'subtitle') xcell.font = fontFor({ size: 12, bold: true })
-        else if (pr.kind === 'text') xcell.font = fontFor({ color: { argb: n.link ? LINK_FONT_ARGB : MUTED_ARGB }, underline: !!n.link })
-        else if (pr.kind === 'kpi') xcell.font = i % 2 === 0 ? fontFor({ bold: true, color: { argb: MUTED_ARGB } }) : fontFor({ size: 14, bold: true, color: { argb: n.input ? INPUT_FONT_ARGB : 'FF0B4A24' } })
-        else if (pr.kind === 'links') xcell.font = fontFor({ color: { argb: LINK_FONT_ARGB }, underline: true })
-        if (n.f && n.raw === 0) xcell.model.result = 0
-      })
-      if (pr.kind === 'title') r.height = 24
-    }
-    if (section.note) {
-      ws.addRow([section.note])
-      ws.lastRow.font = fontFor({ italic: true, color: { argb: 'FF475569' } })
-    }
-  } else if (opts.withTitle) {
-    ws.addRow([payload.title])
-    ws.lastRow.font = fontFor({ bold: true, size: 16, color: { argb: 'FF0B4A24' } })
-    for (const line of chrome.headerLines) {
-      ws.addRow([line]); ws.lastRow.font = fontFor({ color: { argb: MUTED_ARGB }, size: 10 })
-    }
-    if (payload.filters) { ws.addRow([payload.filters]); ws.lastRow.font = fontFor({ color: { argb: MUTED_ARGB } }) }
-    ws.addRow([`${chrome.attributionPrefix} · Generated ${new Date().toLocaleString()}`])
-    ws.lastRow.font = fontFor({ color: { argb: 'FF94A3B8' }, size: 9 })
-    ws.addRow([])
-  }
-  if (section.title && !section.plain) {
-    ws.addRow([section.title])
-    ws.lastRow.font = fontFor({ bold: true, size: 12 })
-  }
+  const numericCol = section.columns.map((_, i) => isNumericColumn(section, i))
+  const headFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: chrome.excelHeaderArgb } }
 
   // Spanning group header row: Center Across Selection, never merged, so the
-  // table below sorts and filters cleanly.
+  // table below sorts and filters cleanly. The cells a label is centered
+  // across must be EMPTY (no value at all) or the centering stops at them.
+  let groupRow: number | null = null
   if (section.groups && section.groups.length > 0) {
-    const groupRowVals: string[] = []
-    for (const g of section.groups) { groupRowVals.push(g.label); for (let k = 1; k < g.span; k++) groupRowVals.push('') }
-    const gr = ws.addRow(groupRowVals)
-    // Two lines normally; three when a one-column group has to wrap a long label.
-    gr.height = section.groups.some((g) => g.span === 1 && g.label.length > 14) ? 45 : 32
+    const vals: Array<string | null> = []
+    for (const g of section.groups) { vals.push(g.label || null); for (let k = 1; k < g.span; k++) vals.push(null) }
+    const gr = ws.addRow(vals)
+    groupRow = gr.number
+    let lines = 1
     let col = 1
     for (const g of section.groups) {
+      const span = widths.slice(col - 1, col - 1 + g.span).reduce((a, w) => a + w, 0)
+      if (g.span === 1) lines = Math.max(lines, wrappedLines(g.label, span - 1))
       for (let k = 0; k < g.span; k++) {
         const cell = gr.getCell(col + k)
         cell.font = fontFor({ bold: true, color: { argb: 'FFFFFFFF' } })
-        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: chrome.excelHeaderArgb } }
+        cell.fill = headFill
         // A one-column group wraps instead of centering across (nothing to center across).
         cell.alignment = { horizontal: g.span > 1 ? 'centerContinuous' : 'center', vertical: 'middle', wrapText: g.span === 1 }
         cell.border = { bottom: { style: 'thin', color: { argb: 'FFFFFFFF' } } }
       }
       col += g.span
     }
+    gr.height = Math.max(20, lines * LINE_PT + 4)
   }
 
-  // Column header row: wrapped, tall, with a note per column when given.
-  const headerRow = ws.addRow(section.columns.map((c) => c.label))
-  const headerRowNumber = headerRow.number
-  if (expectedHeaderRow != null && headerRowNumber !== expectedHeaderRow) {
-    throw new Error(`export layout drift: header landed on row ${headerRowNumber}, layout expected ${expectedHeaderRow}`)
-  }
-  headerRow.height = 30
-  headerRow.eachCell((cell: any, col: number) => {
-    const c = section.columns[col - 1]
+  // Column header row: wrapped, as tall as its longest label needs. A numeric
+  // column's label sits over its numbers; under a filter button it is nudged
+  // clear of the button.
+  // (A stacked table with no labels at all — a signature block — draws none.)
+  const headerRow = opts.headless ? null : ws.addRow(section.columns.map((c) => c.label || null))
+  const headerRowNumber: number = headerRow ? headerRow.number : (ws.lastRow?.number ?? 0)
+  let headerLines = 1
+  for (let i = 0; headerRow && i < ncols; i++) {
+    const c = section.columns[i]
+    const cell = headerRow.getCell(i + 1)
+    const right = numericCol[i]
     cell.font = fontFor({ bold: true, color: { argb: 'FFFFFFFF' } })
-    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: chrome.excelHeaderArgb } }
-    cell.alignment = { horizontal: c?.align === 'right' ? 'right' : 'left', vertical: 'middle', wrapText: true }
-  })
+    cell.fill = headFill
+    cell.alignment = { horizontal: right ? 'right' : 'left', vertical: 'middle', wrapText: true, ...(right && opts.filtered ? { indent: 2 } : {}) }
+    headerLines = Math.max(headerLines, wrappedLines(c.label, widths[i] - (opts.filtered ? 4 : 1)))
+  }
+  if (headerRow) headerRow.height = Math.max(22, headerLines * LINE_PT + 6)
 
   // Data rows.
   const firstDataRow = headerRowNumber + 1
@@ -645,25 +844,36 @@ function writeExcelSection(ws: Ws, payload: ExportPayload, section: ExportSectio
       }
       return
     }
-    const values = row.map((cell, i) => {
-      const n = normCell(cell)
+    const cells = section.columns.map((_, i) => normCell(row[i] ?? null))
+    const values = cells.map((n, i) => {
       const fmt = n.format ?? section.columns[i]?.format
       let formulaText: string | null = null
-      if (n.f) { requireLayout(); formulaText = toExcelFormula(n.f, formulaCtxAt(ri)) }
+      if (n.f) {
+        if (!opts.layout || !section.key) throw new Error('formula cells need a keyed section and a resolved layout')
+        formulaText = toExcelFormula(n.f, { layout: opts.layout, at: { s: section.key, r: ri } })
+      }
       return cellValueFor(n, fmt, formulaText)
     })
     const r = ws.addRow(values)
-    row.forEach((cell, i) => {
-      const n = normCell(cell)
+    let lines = 1
+    cells.forEach((n, i) => {
       const xcell = r.getCell(i + 1)
-      const fmt = n.format ?? section.columns[i]?.format
-      styleCell(xcell, n, fmt, zeroAsDash, section.columns[i]?.align)
+      const col = section.columns[i]
+      const fmt = n.format ?? col?.format
+      // Long text wraps inside its column and the row grows to hold it.
+      const wraps = typeof n.raw === 'string' && n.f == null && col?.wrap !== false && !isDateCell(n, fmt) &&
+        (n.raw.length > widths[i] - 1 || n.raw.includes('\n'))
+      // Body text in Calibri runs about a tenth narrower than the digit a
+      // column's width is measured in, so a line holds a little more than `width`.
+      if (wraps) lines = Math.max(lines, wrappedLines(n.raw as string, widths[i] * 1.1))
+      styleCell(xcell, n, fmt, zeroAsDash, col?.align, wraps)
       xcell.border = { bottom: { style: 'thin', color: { argb: RULE_ARGB } } }
       // exceljs drops a falsy cached result (0) when it copies the formula
       // value in; put it back on the live model so the file carries <v>0</v>
       // and a viewer that never recalculates shows 0, not blank.
       if (n.f && n.raw === 0) xcell.model.result = 0
     })
+    if (lines > 1) r.height = lines * LINE_PT
     if (kind === 'total' || kind === 'subtotal') {
       for (let c = 1; c <= ncols; c++) {
         const cell = r.getCell(c)
@@ -678,18 +888,26 @@ function writeExcelSection(ws: Ws, payload: ExportPayload, section: ExportSectio
   })
   const lastDataRow = headerRowNumber + Math.max(1, section.rows.length)
 
-  // Widths, freeze, gridlines, autofilter, banding and check formats.
-  excelColWidths(section).forEach((w, i) => { ws.getColumn(i + 1).width = w })
-  ws.views = [{ state: 'frozen', xSplit: section.freezeColumns ?? 1, ySplit: headerRowNumber, showGridLines: false, activeCell: 'A1' }]
-  if (section.plain && ncols > 0) {
-    ws.autoFilter = { from: { row: headerRowNumber, column: 1 }, to: { row: lastDataRow, column: ncols } }
-  }
   if (ncols > 0 && section.rows.length > 0) {
-    const dataRef = `A${firstDataRow}:${columnLetters(ncols)}${firstDataRow + section.rows.length - 1}`
-    ws.addConditionalFormatting({
-      ref: dataRef,
-      rules: [{ type: 'expression', formulae: ['MOD(ROW(),2)=0'], style: { fill: { type: 'pattern', pattern: 'solid', bgColor: { argb: BAND_ARGB } } }, priority: 2 }],
-    })
+    // Banding on plain data rows only — a conditional format would paint over
+    // a subtotal's or a group label's own fill — in runs between them.
+    if (section.banded !== false) {
+      let runStart: number | null = null
+      const flush = (endIdx: number) => {
+        if (runStart == null) return
+        ws.addConditionalFormatting({
+          ref: `A${firstDataRow + runStart}:${columnLetters(ncols)}${firstDataRow + endIdx}`,
+          rules: [{ type: 'expression', formulae: ['MOD(ROW(),2)=0'], style: { fill: { type: 'pattern', pattern: 'solid', bgColor: { argb: BAND_ARGB } } }, priority: 2 }],
+        })
+        runStart = null
+      }
+      section.rows.forEach((_, ri) => {
+        const plainRow = (section.rowMeta?.[ri] ?? 'data') === 'data'
+        if (plainRow && runStart == null) runStart = ri
+        if (!plainRow) flush(ri - 1)
+      })
+      flush(section.rows.length - 1)
+    }
     section.columns.forEach((c, i) => {
       if (c.kind !== 'check') return
       const ref = `${columnLetters(i + 1)}${firstDataRow}:${columnLetters(i + 1)}${firstDataRow + section.rows.length - 1}`
@@ -702,22 +920,146 @@ function writeExcelSection(ws: Ws, payload: ExportPayload, section: ExportSectio
       })
     })
   }
+  return { groupRow, headerRow: headerRowNumber, firstDataRow, lastDataRow }
+}
 
-  // Print-ready.
-  const generated = new Date()
-  const footer = payload.excel?.footer ?? `${chrome.attributionPrefix} · ${payload.title} · generated ${generated.toLocaleDateString()}`
+/** Print-ready: fit to one page wide, repeat the header, footer with the page number. */
+function setupPrint(ws: Ws, payload: ExportPayload, opts: { ncols: number; lastRow: number; totalWidth: number; titles: string | null; tabColor?: string }): void {
+  const chrome = exportChrome(payload.branding)
+  const footer = payload.excel?.footer ?? `${chrome.attributionPrefix} · ${payload.title} · generated ${new Date().toLocaleDateString()}`
   ws.pageSetup = {
-    orientation: 'landscape',
+    orientation: payload.orientation ?? (opts.totalWidth > PORTRAIT_WIDTH ? 'landscape' : 'portrait'),
     fitToPage: true,
     fitToWidth: 1,
     fitToHeight: 0,
     paperSize: 1,
     margins: { left: 0.25, right: 0.25, top: 0.6, bottom: 0.6, header: 0.3, footer: 0.3 },
-    printTitlesRow: `${headerRowNumber}:${headerRowNumber}`,
-    printArea: ncols > 0 ? `A1:${columnLetters(ncols)}${lastDataRow}` : undefined,
+    printTitlesRow: opts.titles ?? undefined,
+    printArea: opts.ncols > 0 ? `A1:${columnLetters(opts.ncols)}${opts.lastRow}` : undefined,
   }
   ws.headerFooter = { oddFooter: `&L&8${footer}&R&8page &P of &N` }
-  if (section.tabColor) ws.properties.tabColor = { argb: section.tabColor }
+  if (opts.tabColor) ws.properties.tabColor = { argb: opts.tabColor }
+}
+
+/** One section on its own sheet: title block (or the section's prelude),
+ *  table, postlude — then widths, freeze panes, filter and print setup. */
+function writeExcelSection(ws: Ws, payload: ExportPayload, section: ExportSection, opts: { layout?: FormulaLayout; now: Date }): void {
+  const chrome = exportChrome(payload.branding)
+  const zeroAsDash = payload.excel?.zeroAsDash
+  const ncols = section.columns.length
+  const filtered = (section.autoFilter ?? !!section.plain) && ncols > 0 && section.rows.length > 0
+  const widths = excelColWidths(section, filtered)
+  const fx: FormulaCtx = { layout: opts.layout, key: section.key }
+
+  if (section.plain) {
+    writeExtraRows(ws, section.prelude ?? [], section, zeroAsDash, fx)
+    if (section.note) {
+      ws.addRow([section.note])
+      ws.lastRow.font = fontFor({ italic: true, color: { argb: 'FF475569' } })
+    }
+    if ((section.prelude ?? []).length > 0 || section.note) { ws.addRow([]); ws.lastRow.height = 6 }
+  } else {
+    writeTitleBlock(ws, sheetTitleOf(payload, section), contextLines(payload, chrome, opts.now))
+  }
+
+  const t = writeTable(ws, payload, section, widths, { layout: opts.layout, filtered })
+  const expected = headerRowOf(payload, section)
+  if (t.headerRow !== expected) throw new Error(`export layout drift: header landed on row ${t.headerRow}, layout expected ${expected}`)
+
+  let lastRow = t.lastDataRow
+  if (section.postlude && section.postlude.length > 0) {
+    ws.addRow([])
+    writeExtraRows(ws, section.postlude, section, zeroAsDash, fx)
+    lastRow = ws.lastRow.number
+  }
+
+  widths.forEach((w, i) => { ws.getColumn(i + 1).width = w })
+
+  // Freeze panes: the header (with its short title block) and the identifying
+  // column(s) — see the layout contract. A header that sits too deep is a bug
+  // in the report's builder (too much above the table): every test that
+  // builds a workbook fails on it, and a customer's file is left unfrozen
+  // rather than opening with the window swallowed.
+  if (t.headerRow > MAX_FROZEN_ROWS && process.env.NODE_ENV === 'test') {
+    throw new Error(`export layout: "${section.title ?? payload.title}" puts its header on row ${t.headerRow} — at most ${MAX_FROZEN_ROWS} rows may sit above the data (move KPIs, link lists and notes to the section's postlude)`)
+  }
+  const ySplit = t.headerRow <= MAX_FROZEN_ROWS ? t.headerRow : 0
+  const xSplit = frozenColumnCount(section, widths)
+  const firstCell = `${columnLetters(xSplit + 1)}${t.firstDataRow}`
+  ws.views = xSplit > 0 || ySplit > 0
+    ? [{ state: 'frozen', xSplit, ySplit, topLeftCell: `${columnLetters(xSplit + 1)}${ySplit + 1}`, activeCell: firstCell, showGridLines: false }]
+    : [{ showGridLines: false, activeCell: firstCell }]
+  if (filtered) ws.autoFilter = { from: { row: t.headerRow, column: 1 }, to: { row: t.lastDataRow, column: ncols } }
+
+  setupPrint(ws, payload, {
+    ncols, lastRow, totalWidth: widths.reduce((a, w) => a + w, 0),
+    titles: `${t.groupRow ?? t.headerRow}:${t.headerRow}`, tabColor: section.tabColor,
+  })
+}
+
+/** The headline cards as a Metric / Value table at the sheet's next row.
+ *  Values are the display strings the screen shows. Returns the two widths. */
+function writeSummaryCards(ws: Ws, cards: SummaryCard[], chrome: ExportChrome): [number, number] {
+  const hr = ws.addRow(['Metric', 'Value'])
+  hr.height = 22
+  for (const col of [1, 2]) {
+    const c = hr.getCell(col)
+    c.font = fontFor({ bold: true, color: { argb: 'FFFFFFFF' } })
+    c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: chrome.excelHeaderArgb } }
+    c.alignment = { horizontal: col === 2 ? 'right' : 'left', vertical: 'middle' }
+  }
+  let labelWidth = 24
+  let valueWidth = 14
+  for (const card of cards) {
+    const label = card.sub ? `${card.label} (${card.sub})` : card.label
+    const r = ws.addRow([label, card.value || null])
+    r.getCell(1).font = fontFor()
+    r.getCell(2).font = fontFor({ bold: true, ...(card.tone && card.tone !== 'neutral' ? { color: { argb: toneArgb(card.tone) } } : {}) })
+    r.getCell(2).alignment = { horizontal: 'right' }
+    for (const c of [1, 2]) r.getCell(c).border = { bottom: { style: 'thin', color: { argb: RULE_ARGB } } }
+    labelWidth = Math.max(labelWidth, label.length + 2)
+    valueWidth = Math.max(valueWidth, String(card.value ?? '').length + 3)
+  }
+  return [Math.min(60, labelWidth), Math.min(40, valueWidth)]
+}
+
+/** Several tables stacked on one sheet (a ticket, a statement): one title
+ *  block, each table under its own heading. Nothing is frozen — no single
+ *  header row is true for the whole sheet — and every column is as wide as
+ *  the widest table needs. */
+function writeStackedSheet(ws: Ws, payload: ExportPayload, now: Date): void {
+  const chrome = exportChrome(payload.branding)
+  const zeroAsDash = payload.excel?.zeroAsDash
+  const widths: number[] = []
+  for (const section of payload.sections) {
+    excelColWidths(section, false).forEach((w, i) => { widths[i] = Math.max(widths[i] ?? 0, w) })
+  }
+  writeTitleBlock(ws, payload.title, contextLines(payload, chrome, now))
+  // A document's headline figures lead it, as on screen.
+  if (payload.summary?.length) {
+    const w = writeSummaryCards(ws, payload.summary, chrome)
+    widths[0] = Math.max(widths[0] ?? 0, w[0])
+    widths[1] = Math.max(widths[1] ?? 0, w[1])
+    ws.addRow([])
+  }
+  payload.sections.forEach((section, i) => {
+    if (i > 0) ws.addRow([])
+    if (section.title) {
+      ws.addRow([section.title])
+      ws.lastRow.font = fontFor({ bold: true, size: 12 })
+      ws.lastRow.height = 20
+    }
+    if (section.prelude) writeExtraRows(ws, section.prelude, section, zeroAsDash, {})
+    if (section.note) {
+      ws.addRow([section.note])
+      ws.lastRow.font = fontFor({ italic: true, color: { argb: 'FF475569' } })
+    }
+    writeTable(ws, payload, section, widths.slice(0, section.columns.length), { filtered: false, headless: section.columns.every((c) => !c.label) })
+    if (section.postlude && section.postlude.length > 0) writeExtraRows(ws, section.postlude, section, zeroAsDash, {})
+  })
+  widths.forEach((w, i) => { ws.getColumn(i + 1).width = w })
+  ws.views = [{ showGridLines: false, activeCell: 'A1' }]
+  setupPrint(ws, payload, { ncols: widths.length, lastRow: ws.lastRow.number, totalWidth: widths.reduce((a, w) => a + w, 0), titles: null })
 }
 
 /** Build the exceljs Workbook for a payload (exported so tests can inspect the
@@ -729,12 +1071,13 @@ export async function buildExcelWorkbook(payload: ExportPayload): Promise<any> {
   const ExcelJS: any = (mod as any).default ?? mod
   const wb = new ExcelJS.Workbook()
   const chrome = exportChrome(payload.branding)
+  const now = new Date()
   wb.creator = chrome.attributionPrefix
   wb.title = payload.excel?.title ?? payload.title
   wb.subject = payload.excel?.subject ?? payload.filters ?? payload.title
   wb.company = payload.excel?.company ?? chrome.attributionPrefix
-  wb.created = new Date()
-  wb.modified = wb.created
+  wb.created = now
+  wb.modified = now
 
   // Excel sheet names must be ≤31 chars, exclude \ / ? * [ ] :, be non-empty, and
   // be UNIQUE within the workbook (case-insensitively) — exceljs throws
@@ -755,56 +1098,73 @@ export async function buildExcelWorkbook(payload: ExportPayload): Promise<any> {
   }
   if (payload.fullCalcOnLoad) wb.calcProperties.fullCalcOnLoad = true
 
-  // Multi-section reports: a Summary sheet first (title/filters/cards), then one
-  // sheet per section — matching how the report is organized on screen. Filters
-  // already render atop every section sheet, so only summary CARDS justify a
-  // dedicated cover sheet (a report may also define its own "Summary" section).
-  const multi = !payload.singleSheet && payload.sections.length > 1
-  if (multi && payload.summary?.length) {
+  // The headline cards the screen shows above its table go on a Summary sheet
+  // of their own, first in the file — for every report that has cards, one
+  // table or several — so the workbook reads in the screen's order and no
+  // table carries a block of metrics frozen above it.
+  if (!payload.singleSheet && payload.summary?.length) {
     const ws = wb.addWorksheet('Summary')
-    ws.addRow([payload.title]); ws.lastRow.font = fontFor({ bold: true, size: 16, color: { argb: 'FF0B4A24' } })
-    for (const line of chrome.headerLines) { ws.addRow([line]); ws.lastRow.font = fontFor({ color: { argb: MUTED_ARGB }, size: 10 }) }
-    if (payload.filters) { ws.addRow([payload.filters]); ws.lastRow.font = fontFor({ color: { argb: MUTED_ARGB } }) }
-    ws.addRow([`${chrome.attributionPrefix} · Generated ${new Date().toLocaleString()}`]); ws.lastRow.font = fontFor({ color: { argb: 'FF94A3B8' }, size: 9 })
-    ws.addRow([])
-    if (payload.summary?.length) {
-      const hr = ws.addRow(['Metric', 'Value'])
-      hr.eachCell((c: any) => { c.font = fontFor({ bold: true, color: { argb: 'FFFFFFFF' } }); c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: chrome.excelHeaderArgb } } })
-      for (const card of payload.summary) {
-        const r = ws.addRow([card.sub ? `${card.label} (${card.sub})` : card.label, card.value])
-        r.getCell(1).font = fontFor()
-        r.getCell(2).font = fontFor(card.tone && card.tone !== 'neutral' ? { color: { argb: toneArgb(card.tone) } } : {})
-        r.getCell(2).alignment = { horizontal: 'right' }
-      }
-      ws.getColumn(1).width = 32
-      ws.getColumn(2).width = 22
-    }
-    ws.views = [{ showGridLines: false }]
+    writeTitleBlock(ws, payload.title, contextLines(payload, chrome, now))
+    const w = writeSummaryCards(ws, payload.summary, chrome)
+    ws.getColumn(1).width = w[0]
+    ws.getColumn(2).width = w[1]
+    ws.views = [{ showGridLines: false, activeCell: 'A1' }]
+    setupPrint(ws, payload, { ncols: 2, lastRow: ws.lastRow.number, totalWidth: w[0] + w[1], titles: null })
   }
 
-  if (payload.singleSheet) {
-    const ws = wb.addWorksheet(sheetNames[0])
-    payload.sections.forEach((section, i) => {
-      if (i > 0) ws.addRow([])
-      writeExcelSection(ws, payload, section, { withTitle: i === 0 })
-    })
-    // singleSheet: freeze only the very first header row is awkward across stacked
-    // sections, so leave the per-section freeze from writeExcelSection (last wins).
+  if (payload.singleSheet && payload.sections.length > 1) {
+    writeStackedSheet(wb.addWorksheet(sheetNames[0]), payload, now)
   } else {
     payload.sections.forEach((section, i) => {
       const ws = wb.addWorksheet(sheetNames[i])
-      writeExcelSection(ws, payload, section, { withTitle: true, layout })
+      writeExcelSection(ws, payload, section, { layout, now })
     })
   }
-  // The first sheet opens active, at A1.
+  // The first sheet opens active.
   wb.views = [{ x: 0, y: 0, width: 20000, height: 12000, firstSheet: 0, activeTab: 0, visibility: 'visible' }]
   return wb
 }
 
-export async function exportToExcel(payload: ExportPayload): Promise<void> {
+/** Excel flags ticket numbers, FSA numbers and per-row formulas with green
+ *  corner triangles ("number stored as text", "inconsistent formula"). They
+ *  are deliberate here, so each sheet tells Excel not to flag them. exceljs
+ *  has no setting for it; the sheet XML is patched in the finished file. A
+ *  real error value (#DIV/0!) is still flagged. Any failure returns the file
+ *  untouched. */
+async function quietErrorFlags(bytes: Uint8Array): Promise<Uint8Array> {
+  try {
+    const mod = await import('jszip')
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const JSZip: any = (mod as any).default ?? mod
+    const zip = await JSZip.loadAsync(bytes)
+    for (const name of Object.keys(zip.files)) {
+      if (!/^xl\/worksheets\/sheet\d+\.xml$/.test(name)) continue
+      const xml: string = await zip.file(name).async('string')
+      if (xml.includes('<ignoredErrors')) continue
+      const dim = /<dimension ref="([^"]+)"/.exec(xml)?.[1]
+      if (!dim) continue
+      // Schema order: ignoredErrors follows the print settings and precedes drawings, tables and extensions.
+      const at = xml.search(/<(?:smartTags|drawing|legacyDrawing|legacyDrawingHF|picture|oleObjects|controls|webPublishItems|tableParts|extLst)[\s>/]|<\/worksheet>/)
+      if (at < 0) continue
+      const node = `<ignoredErrors><ignoredError sqref="${dim}" numberStoredAsText="1" formula="1" formulaRange="1" unlockedFormula="1" emptyCellReference="1" twoDigitTextYear="1"/></ignoredErrors>`
+      zip.file(name, xml.slice(0, at) + node + xml.slice(at))
+    }
+    return await zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' })
+  } catch {
+    return bytes
+  }
+}
+
+/** The finished .xlsx file for a payload, as bytes. */
+export async function excelFileBytes(payload: ExportPayload): Promise<Uint8Array> {
   const wb = await buildExcelWorkbook(payload)
   const buf = await wb.xlsx.writeBuffer()
-  browserDownload(new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), `${payload.filename || defaultFilename(payload.title)}.xlsx`)
+  return quietErrorFlags(new Uint8Array(buf as ArrayBuffer))
+}
+
+export async function exportToExcel(payload: ExportPayload): Promise<void> {
+  const bytes = await excelFileBytes(payload)
+  browserDownload(new Blob([bytes as BlobPart], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), `${payload.filename || defaultFilename(payload.title)}.xlsx`)
 }
 
 // ---------- PDF (jsPDF + jspdf-autotable) ----------
@@ -820,6 +1180,11 @@ export function pdfSafe(s: string): string {
     .replace(/≤/g, '<=')
     .replace(/≥/g, '>=')
     .replace(/≈/g, '~')
+    .replace(/≠/g, '<>')
+    .replace(/\u2212/g, '-') // a true minus sign
+    .replace(/[\u2713\u2714]/g, 'Yes') // check marks
+    .replace(/[\u2715\u2716\u2717\u2718]/g, '×') // crosses (× is in the font)
+    .replace(/[\u2009\u200A\u202F\u00A0]/g, ' ') // thin / narrow / no-break spaces
 }
 
 // The header logo (Turnrow mark, or the org's own logo in org-branded mode)
@@ -842,14 +1207,16 @@ async function brandMarkDataUrl(url: string): Promise<string | null> {
   }
 }
 
-export async function exportToPdf(payload: ExportPayload): Promise<void> {
+/** Build the jsPDF document for a payload (exported so tests and the sample
+ *  dump can write the file without a browser download). */
+export async function buildPdfDocument(payload: ExportPayload): Promise<any> { // eslint-disable-line @typescript-eslint/no-explicit-any
   const [{ default: JsPDF }, autoTableMod] = await Promise.all([import('jspdf'), import('jspdf-autotable')])
   const autoTable = (autoTableMod as { default: unknown }).default ?? autoTableMod
   const orientation = resolveOrientation(payload)
   const doc = new JsPDF({ orientation, unit: 'pt' })
   const pageWidth = doc.internal.pageSize.getWidth()
   const pageHeight = doc.internal.pageSize.getHeight()
-  const today = new Date().toLocaleString()
+  const stamp = generatedStamp(new Date())
 
   // Brand header: Turnrow chrome by default; `branding: 'org'` renders the
   // FARM'S identity instead — org logo + display name, NO Turnrow marks
@@ -871,7 +1238,7 @@ export async function exportToPdf(payload: ExportPayload): Promise<void> {
   doc.text(pdfSafe(payload.title), 40, 58)
   doc.setFontSize(10)
   doc.setTextColor(110)
-  doc.text(`Generated ${today}`, pageWidth - 40, 34, { align: 'right' })
+  doc.text(stamp, pageWidth - 40, 34, { align: 'right' })
   doc.setTextColor(0)
 
   let cursorY = 76
@@ -883,15 +1250,19 @@ export async function exportToPdf(payload: ExportPayload): Promise<void> {
     cursorY += 12
   }
   if (payload.filters) {
+    // A long filter line wraps inside the margins instead of running off the page.
     doc.setFontSize(10)
     doc.setTextColor(90)
-    doc.text(pdfSafe(payload.filters), 40, cursorY)
+    const lines = doc.splitTextToSize(pdfSafe(payload.filters), pageWidth - 80) as string[]
+    doc.text(lines, 40, cursorY)
     doc.setTextColor(0)
-    cursorY += 16
+    cursorY += 4 + 12 * lines.length
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const at = autoTable as any
+  const TOP = 40 // top margin of every page after the first
+  const BOTTOM = 40
 
   // Summary band: a compact Metric / Value table mirroring the cards.
   if (payload.summary?.length) {
@@ -902,6 +1273,10 @@ export async function exportToPdf(payload: ExportPayload): Promise<void> {
       styles: { fontSize: 9, cellPadding: 3 },
       columnStyles: { 0: { textColor: [100, 116, 139] }, 1: { halign: 'right', fontStyle: 'bold' } },
       margin: { left: 40, right: pageWidth / 2 },
+      didParseCell: (data: any) => {
+        const tone = payload.summary?.[data.row.index]?.tone
+        if (data.column.index === 1 && tone && tone !== 'neutral') data.cell.styles.textColor = TONE_RGB[tone]
+      },
     })
     cursorY = (doc as any).lastAutoTable?.finalY ?? cursorY
     cursorY += 14
@@ -910,21 +1285,18 @@ export async function exportToPdf(payload: ExportPayload): Promise<void> {
   for (const section of payload.sections) {
     const meta = section.rowMeta ?? []
     const cols = section.columns
-
-    if (section.title) {
-      if (cursorY > pageHeight - 90) { doc.addPage(); cursorY = 40 }
-      doc.setFillColor(241, 245, 249)
-      doc.rect(40, cursorY + 2, pageWidth - 80, 22, 'F')
-      doc.setFontSize(12)
-      doc.setTextColor(15, 23, 42)
-      doc.text(section.title, 48, cursorY + 17)
-      doc.setTextColor(0)
-      cursorY += 30
-    }
+    // A wide table gets smaller type before its text columns start wrapping.
+    const fontSize = cols.length >= 16 ? 7 : cols.length >= 12 ? 8 : 9
+    const hasSubheads = meta.some((k) => k === 'subhead')
+    // A heading bar tells several tables apart; a report with one table needs none.
+    const heading = payload.sections.length > 1 ? section.title : undefined
+    doc.setFontSize(9)
+    const noteLines = section.note ? (doc.splitTextToSize(pdfSafe(section.note), pageWidth - 80) as string[]) : []
+    const titleH = (heading ? 30 : 0) + (noteLines.length > 0 ? 6 + 11 * noteLines.length : 0)
 
     // Resolved horizontal alignment per column (numeric → right).
     const colAlign = (i: number): 'left' | 'right' =>
-      cols[i]?.align ?? (cols[i]?.format && cols[i].format !== 'text' ? 'right' : 'left')
+      cols[i]?.align ?? (cols[i]?.format && cols[i].format !== 'text' && cols[i].format !== 'date' ? 'right' : 'left')
 
     // Head: optional spanning-group row above the column labels.
     const head: any[] = []
@@ -935,6 +1307,8 @@ export async function exportToPdf(payload: ExportPayload): Promise<void> {
         styles: { halign: 'center' as const, fillColor: chrome.pdfHeadFill as [number, number, number], textColor: [255, 255, 255] as [number, number, number], fontStyle: 'bold' as const },
       })))
     }
+    // A table with no column labels (a signature block) draws no header bar.
+    const headless = cols.every((c) => !c.label) && head.length === 0
     head.push(cols.map((c) => pdfSafe(c.label)))
 
     // Body: format numbers; expand subhead rows to a full-width spanning cell.
@@ -947,8 +1321,8 @@ export async function exportToPdf(payload: ExportPayload): Promise<void> {
           styles: { fontStyle: 'bold' as const, fillColor: [241, 245, 249] as [number, number, number], textColor: [51, 65, 85] as [number, number, number], halign: 'left' as const },
         }]
       }
-      return r.map((cell, ci) => {
-        const { raw, format, tone } = normCell(cell)
+      return cols.map((_, ci) => {
+        const { raw, format, tone } = normCell(r[ci] ?? null)
         const text = pdfSafe(cellText(raw, format ?? cols[ci]?.format))
         const styles: Record<string, unknown> = {}
         if (tone && tone !== 'neutral') styles.textColor = TONE_RGB[tone]
@@ -956,14 +1330,17 @@ export async function exportToPdf(payload: ExportPayload): Promise<void> {
       })
     })
 
-    at(doc, {
+    // The table's options for rows [from, …) drawn at startY. `widths` pins the
+    // column widths so a table drawn in several pieces lines up exactly.
+    const optionsFor = (from: number, startY: number, widths?: number[]) => ({
       head,
-      body,
-      startY: cursorY + 4,
-      styles: { fontSize: 9, cellPadding: 4, overflow: 'linebreak' },
+      showHead: headless ? ('never' as const) : ('everyPage' as const),
+      body: body.slice(from),
+      startY,
+      styles: { fontSize, cellPadding: fontSize >= 9 ? 4 : 3, overflow: 'linebreak' },
       headStyles: { fillColor: chrome.pdfHeadFill, textColor: [255, 255, 255] },
-      columnStyles: Object.fromEntries(cols.map((c, idx) => [idx, { halign: c.align ?? (c.format && c.format !== 'text' ? 'right' : 'left') }])),
-      margin: { left: 40, right: 40 },
+      columnStyles: Object.fromEntries(cols.map((_, idx) => [idx, { halign: colAlign(idx), ...(widths ? { cellWidth: widths[idx] } : {}) }])),
+      margin: { left: 40, right: 40, top: TOP, bottom: BOTTOM },
       rowPageBreak: 'avoid', // don't split a row across pages
       didParseCell: (data: any) => {
         // Align column-label headers with their column (autotable's headStyles
@@ -974,22 +1351,143 @@ export async function exportToPdf(payload: ExportPayload): Promise<void> {
           return
         }
         if (data.section !== 'body') return
-        const kind = meta[data.row.index]
-        if (kind === 'total') { data.cell.styles.fontStyle = 'bold'; data.cell.styles.fillColor = [226, 232, 240] }
-        else if (kind === 'subtotal') { data.cell.styles.fontStyle = 'bold'; data.cell.styles.fillColor = [248, 250, 252] }
-      },
-      didDrawPage: () => {
-        const n = (doc.internal as any).getNumberOfPages?.() ?? doc.getNumberOfPages()
-        doc.setFontSize(8)
-        doc.setTextColor(140)
-        doc.text(pdfSafe(payload.title), 40, pageHeight - 20)
-        doc.text(`Page ${n}`, pageWidth - 40, pageHeight - 20, { align: 'right' })
-        doc.setTextColor(0)
+        const kind = meta[from + data.row.index]
+        if (kind === 'total') {
+          data.cell.styles.fontStyle = 'bold'
+          data.cell.styles.fillColor = [226, 232, 240]
+          data.cell.styles.lineWidth = { top: 0.9, right: 0, bottom: 0, left: 0 }
+          data.cell.styles.lineColor = [51, 65, 85]
+        } else if (kind === 'subtotal') {
+          data.cell.styles.fontStyle = 'bold'
+          data.cell.styles.fillColor = [232, 245, 233] // the light green the Excel subtotal rows carry
+        }
       },
     })
-    cursorY = ((doc as any).lastAutoTable?.finalY ?? cursorY) + 20
+
+    // Dry run on a scratch document: which page each row lands on, the column
+    // widths the table settles on, and where it ends.
+    const measure = (from: number, startY: number, widths?: number[]) => {
+      const scratch = new JsPDF({ orientation, unit: 'pt' })
+      const pageOfRow: number[] = []
+      at(scratch, { ...optionsFor(from, startY, widths), didDrawCell: (data: any) => { if (data.section === 'body') pageOfRow[data.row.index] = data.pageNumber } })
+      const t = (scratch as any).lastAutoTable
+      return {
+        pageOfRow,
+        pages: Math.max(1, ...pageOfRow.filter((n) => Number.isFinite(n))),
+        finalY: (t?.finalY as number | undefined) ?? startY,
+        widths: ((t?.columns ?? []) as Array<{ width: number }>).map((c) => c.width),
+      }
+    }
+
+    // Where the section starts. A table that fits on one page is never split
+    // across two, and a heading is never left alone at the foot of a page.
+    // (Measured only when it can matter: a short table, or one with group
+    // labels to keep with their rows.)
+    let widths: number[] | undefined
+    const freshPage = cursorY <= TOP + 1
+    if (body.length > 0 && (hasSubheads || body.length <= 60)) {
+      const fresh = measure(0, TOP + titleH + 4)
+      if (fresh.widths.length === cols.length) widths = fresh.widths
+      const remaining = pageHeight - BOTTOM - cursorY
+      const needed = fresh.pages === 1 ? titleH + 4 + (fresh.finalY - (TOP + titleH + 4)) : titleH + 110
+      if (!freshPage && needed > remaining) { doc.addPage(); cursorY = TOP }
+    } else if (!freshPage && cursorY > pageHeight - BOTTOM - (titleH + 110)) {
+      doc.addPage(); cursorY = TOP
+    }
+
+    if (heading) {
+      doc.setFillColor(241, 245, 249)
+      doc.rect(40, cursorY + 2, pageWidth - 80, 22, 'F')
+      doc.setFontSize(12)
+      doc.setTextColor(15, 23, 42)
+      doc.text(pdfSafe(heading), 48, cursorY + 17)
+      doc.setTextColor(0)
+      cursorY += 30
+    }
+    if (noteLines.length > 0) {
+      // The one line of context a table carries (what its rows are).
+      doc.setFontSize(9)
+      doc.setFont('helvetica', 'italic')
+      doc.setTextColor(71, 85, 105)
+      doc.text(noteLines, 40, cursorY + 12)
+      doc.setFont('helvetica', 'normal')
+      doc.setTextColor(0)
+      cursorY += 6 + 11 * noteLines.length
+    }
+
+    // Draw the table. A group label (subhead) that would be the last line on a
+    // page is carried to the next page with its rows: the table is drawn up
+    // to it, the page is turned, and the rest follows with the same widths.
+    let from = 0
+    for (let guard = 0; guard < 500; guard++) {
+      let breakAt = -1
+      if (hasSubheads) {
+        const m = measure(from, cursorY + 4, widths)
+        for (let i = 0; i + 1 < body.length - from; i++) {
+          if (meta[from + i] === 'subhead' && m.pageOfRow[i + 1] > m.pageOfRow[i]) { breakAt = i; break }
+        }
+      }
+      if (breakAt === 0 && cursorY > TOP + 1) { doc.addPage(); cursorY = TOP; continue }
+      if (breakAt > 0) {
+        at(doc, { ...optionsFor(from, cursorY + 4, widths), body: body.slice(from, from + breakAt) })
+        doc.addPage()
+        cursorY = TOP
+        from += breakAt
+        continue
+      }
+      at(doc, optionsFor(from, cursorY + 4, widths))
+      cursorY = ((doc as any).lastAutoTable?.finalY ?? cursorY) + 20
+      break
+    }
+
+    // The rows a section writes under its table (footnotes, what a figure
+    // means, a KPI line) follow it here too, as small print.
+    const under = (section.postlude ?? []).map((pr) => ({
+      kind: pr.kind,
+      text: pr.cells.map((c) => { const n = normCell(c); return cellText(n.raw, n.format) }).filter((t) => t !== '').join('   '),
+    }))
+    if (under.some((u) => u.text !== '')) {
+      cursorY -= 10
+      for (const u of under) {
+        if (u.text === '') { cursorY += 5; continue }
+        const strong = u.kind === 'subtitle' || u.kind === 'title'
+        doc.setFontSize(strong ? 10 : 9)
+        doc.setFont('helvetica', strong ? 'bold' : 'normal')
+        const lines = doc.splitTextToSize(pdfSafe(u.text), pageWidth - 80) as string[]
+        if (cursorY + 12 * lines.length > pageHeight - BOTTOM) { doc.addPage(); cursorY = TOP }
+        if (strong) doc.setTextColor(15, 23, 42)
+        else doc.setTextColor(100, 116, 139)
+        doc.text(lines, 40, cursorY + 9)
+        cursorY += 12 * lines.length + (strong ? 2 : 0)
+      }
+      doc.setFont('helvetica', 'normal')
+      doc.setTextColor(0)
+      cursorY += 16
+    }
   }
 
+  // Footer on every page, now that the page count is known.
+  const pageCount = (doc.internal as any).getNumberOfPages?.() ?? doc.getNumberOfPages()
+  for (let p = 1; p <= pageCount; p++) {
+    doc.setPage(p)
+    doc.setFontSize(8)
+    doc.setTextColor(140)
+    doc.text(pdfSafe(payload.title), 40, pageHeight - 20)
+    doc.text(`Page ${p} of ${pageCount}`, pageWidth - 40, pageHeight - 20, { align: 'right' })
+    doc.setTextColor(0)
+  }
+
+  return doc
+}
+
+/** The finished .pdf file for a payload, as bytes. */
+export async function pdfFileBytes(payload: ExportPayload): Promise<Uint8Array> {
+  const doc = await buildPdfDocument(payload)
+  return new Uint8Array(doc.output('arraybuffer') as ArrayBuffer)
+}
+
+export async function exportToPdf(payload: ExportPayload): Promise<void> {
+  const doc = await buildPdfDocument(payload)
   doc.save(`${payload.filename || defaultFilename(payload.title)}.pdf`)
 }
 
@@ -1015,7 +1513,7 @@ function csvDecimals(fmt?: NumFmt): number | null {
     case 'bu3': return 3
     case 'bu2': case 'acres2': return 2
     case 'factor': case 'ratio': return 4
-    case 'cents': return 4
+    case 'cents': case 'price4': return 4
     default: return null // 'text' and inference pass the raw number through
   }
 }

@@ -1,7 +1,7 @@
 ---
 page_route: /reports/settlement-pdfs
 title: Bundled Settlement Statements
-updated: 2026-09-24
+updated: 2026-11-17
 keywords: settlement, production audit, crop insurance audit, PDF, zip, buyer statements, proof of production
 ---
 ## What this page is for
@@ -20,7 +20,7 @@ When your crop insurance production is audited, the adjuster wants the buyer's s
 - **Crop** — which crop's settlements to gather.
 - **Crop year** — which year's settlements to gather.
 - **Download ZIP** — builds the bundle. The button shows progress while it works and tells you how many PDFs it will include.
-- **Export buttons** — export the list itself (dates, settlement numbers, buyers, matched line counts, PDF status) as a checklist to go with the bundle.
+- **Export buttons** — export the list itself (dates, settlement numbers, buyers, the number of matching loads, PDF status) as a checklist to go with the bundle.
 - **Open →** — jumps to a settlement's review page, where you can attach a missing PDF.
 
 ## Common questions

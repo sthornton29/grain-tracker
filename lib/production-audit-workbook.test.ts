@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import { buildProductionReport, loadIdsOfPlantings, type ProductionReportInput } from '@/lib/production-report'
-import { buildProductionAuditPayload, auditSection, auditFilename, disambiguateFieldNames, AUDIT, ESTIMATED_KIND, GINNED_KIND, type ProductionAuditInput } from '@/lib/production-audit-workbook'
+import { buildProductionAuditPayload, auditSection, auditFilename, disambiguateFieldNames, countySheetKey, AUDIT, ESTIMATED_KIND, GINNED_KIND, type ProductionAuditInput } from '@/lib/production-audit-workbook'
 import { buildProductionBalance, balanceFactors, factorLabel, type BalanceSettlementLine, type BalanceSettlement } from '@/lib/production-balance'
-import { buildExcelWorkbook, evaluatePayload, formulaTextOf, type ExportPayload } from '@/lib/exports'
+import { buildExcelWorkbook, evaluatePayload, formulaTextOf, MAX_FROZEN_ROWS, type ExportPayload } from '@/lib/exports'
 import { computeBushels } from '@/lib/shrink'
 import type { CombineEntryLike } from '@/lib/yields'
 import type { County, Crop, Farm, Field, FieldPlanting, LoadSplit } from '@/lib/types'
@@ -115,8 +115,11 @@ describe('audit workbook — the corn fixture (measured basis)', () => {
     expect(report.excludedLoads).toEqual([])
   })
 
-  it('tabs are in order with no Not Included sheet; Load Data has 7 portions sorted county / farm / field / date', () => {
-    expect(payload.sections.map((s) => s.title)).toEqual(['Summary', 'Field Production', 'Load Data', 'Combine Entries', 'Notes'])
+  it('tabs: the report first (Summary, each county × practice), then the records; no Not Included sheet; Load Data has 7 portions sorted county / farm / field / date', () => {
+    expect(payload.sections.map((s) => s.title)).toEqual([
+      'Summary', 'Colbert County Dryland', 'Colbert County Irrigated', 'Lawrence County Dryland', 'Lawrence County Irrigated',
+      'Field Production', 'Load Data', 'Combine Entries', 'Notes',
+    ])
     expect(payload.sections.some((s) => /not included/i.test(s.title ?? ''))).toBe(false)
     const ld = rowsOf(payload, AUDIT.loadData)
     expect(ld).toHaveLength(7)
@@ -174,24 +177,72 @@ describe('audit workbook — the corn fixture (measured basis)', () => {
     near(cd['acres:corn'], 8); near(cd['prod:corn'], 1200); near(cd['yield:corn'], 150)
     near(ci['acres:corn'], 5); near(ci['prod:corn'], 1000); near(ci['yield:corn'], 200)
     near(total['acres:corn'], 41); near(total['prod:corn'], 6810); expect(Number(total['yield:corn'])).toBeCloseTo(166.1, 1)
-    // Summary data starts on row 16: title, subtitle, filters, three KPI rows, "Contents", five link rows, a blank, the group row, the header.
+    // The Summary opens on its table: title, one context line, a thin spacer, the group row, the header — data starts on row 6.
     expect(formulaTextOf(payload, AUDIT.summary, 3, 'prod:corn')).toBe(
-      `SUMIFS('Field Production'!$T$5:$T$9,'Field Production'!$D$5:$D$9,${esc('A19')},'Field Production'!$E$5:$E$9,${esc('B19')},'Field Production'!$F$5:$F$9,"=Corn",'Field Production'!$I$5:$I$9,${esc('C19')})`,
+      `SUMIFS('Field Production'!$T$5:$T$9,'Field Production'!$D$5:$D$9,${esc('A9')},'Field Production'!$E$5:$E$9,${esc('B9')},'Field Production'!$F$5:$F$9,"=Corn",'Field Production'!$I$5:$I$9,${esc('C9')})`,
     )
-    expect(formulaTextOf(payload, AUDIT.summary, 3, 'yield:corn')).toBe('IFERROR(E19/D19,0)')
-    expect(formulaTextOf(payload, AUDIT.summary, 4, 'acres:corn')).toBe('SUM($D$16:$D$19)')
-    expect(formulaTextOf(payload, AUDIT.summary, 4, 'prod:corn')).toBe('SUM($E$16:$E$19)')
-    expect(formulaTextOf(payload, AUDIT.summary, 4, 'yield:corn')).toBe('IFERROR(E20/D20,0)')
-    // The KPI rows read the Total row; the Contents rows link every tab.
-    const pre = auditSection(payload, AUDIT.summary).prelude!
-    const kpis = pre.filter((p) => p.kind === 'kpi')
-    expect(kpis.map((k) => [k.cells[0], (k.cells[1] as { v: number }).v])).toEqual([['Corn certified acres', 41], ['Corn production (bu)', 6810], ['Corn yield (bu/ac)', 6810 / 41]])
-    expect(formulaTextOf(payload, AUDIT.summary, 4, 'prod:corn')).toBe('SUM($E$16:$E$19)')
-    const links = pre.filter((p) => p.kind === 'links')
-    expect(links.map((l) => (l.cells[0] as { link: string }).link)).toEqual(["#'Summary'!A1", "#'Field Production'!A1", "#'Load Data'!A1", "#'Combine Entries'!A1", "#'Notes'!A1"])
+    expect(formulaTextOf(payload, AUDIT.summary, 3, 'yield:corn')).toBe('IFERROR(E9/D9,0)')
+    expect(formulaTextOf(payload, AUDIT.summary, 4, 'acres:corn')).toBe('SUM($D$6:$D$9)')
+    expect(formulaTextOf(payload, AUDIT.summary, 4, 'prod:corn')).toBe('SUM($E$6:$E$9)')
+    expect(formulaTextOf(payload, AUDIT.summary, 4, 'yield:corn')).toBe('IFERROR(E10/D10,0)')
+    // Nothing but a title and one line of context sits above the table (no KPI
+    // strip, no contents list — those froze the table off the screen); the
+    // contents list follows the table and links every other tab.
+    const summary = auditSection(payload, AUDIT.summary)
+    expect(summary.prelude!.map((p) => p.kind)).toEqual(['title', 'text'])
+    expect(summary.prelude![0].cells[0]).toBe('2026 Crop Insurance Production Report')
+    expect(String(summary.prelude![1].cells[0])).toContain('Turnrow Farm · 2026 crop · All entities · All crops · Measured (scale tickets)')
+    const links = summary.postlude!.filter((p) => p.kind === 'links')
+    expect(links.map((l) => (l.cells[0] as { link: string }).link)).toEqual([
+      "#'Colbert County Dryland'!A1", "#'Colbert County Irrigated'!A1", "#'Lawrence County Dryland'!A1", "#'Lawrence County Irrigated'!A1",
+      "#'Field Production'!A1", "#'Load Data'!A1", "#'Combine Entries'!A1", "#'Notes'!A1",
+    ])
     // Each field row links to its first Load Data row.
     const fpField = auditSection(payload, AUDIT.fieldProduction).rows[4][1] as { v: string; link: string }
     expect(fpField).toEqual({ v: 'Home Place', link: "#'Load Data'!A8" })
+  })
+
+  it('each county × practice sheet lists its farms with FSA #, and every number equals the on-screen sheet', () => {
+    expect(report.detailSheets.map((d) => d.sheetName)).toEqual(['Colbert County Dryland', 'Colbert County Irrigated', 'Lawrence County Dryland', 'Lawrence County Irrigated'])
+    report.detailSheets.forEach((sheet, si) => {
+      const sec = auditSection(payload, countySheetKey(si))
+      expect(sec.title).toBe(sheet.sheetName)
+      const rows = rowsOf(payload, countySheetKey(si))
+      const farmsOnScreen = [...sheet.farms.values()].sort((a, b) => a.farmName.localeCompare(b.farmName))
+      expect(rows.map((r) => r.farm)).toEqual([...farmsOnScreen.map((f) => f.farmName), 'Total'])
+      farmsOnScreen.forEach((f, i) => {
+        const cell = f.byCrop.get('corn')!
+        expect(rows[i].fsa).toBe(f.fsaNumber ?? '')
+        near(rows[i]['acres:corn'], cell.acres); near(rows[i]['prod:corn'], cell.bu); near(rows[i]['yield:corn'], cell.acres > 0 ? cell.bu / cell.acres : 0)
+      })
+      // The sheet's Total row is the Summary's line for the same county and practice.
+      const total = rows[rows.length - 1]
+      const screen = report.summaryRows[si].byCrop.get('corn')!
+      near(total['acres:corn'], screen.acres); near(total['prod:corn'], screen.bu); near(total['yield:corn'], screen.bu / screen.acres)
+      expect(sec.rowMeta![sec.rows.length - 1]).toBe('total')
+    })
+    // Lawrence County Dryland: Pruitt Farm (12 ac, 1,700 bu) and Wheeler Farm (6 ac, the 900 bu combine entry).
+    const ld = rowsOf(payload, countySheetKey(2))
+    expect(ld.map((r) => [r.farm, r['acres:corn'], r['prod:corn']])).toEqual([['Pruitt Farm', 12, 1700], ['Wheeler Farm', 6, 900], ['Total', 18, 2600]])
+    // Title, the link back + context, a thin spacer, the group row, the header: data starts on row 6.
+    expect(formulaTextOf(payload, countySheetKey(3), 0, 'prod:corn')).toBe(
+      `SUMIFS('Field Production'!$T$5:$T$9,'Field Production'!$A$5:$A$9,${esc('A6')},'Field Production'!$D$5:$D$9,"=Lawrence County",'Field Production'!$E$5:$E$9,"=AL",'Field Production'!$F$5:$F$9,"=Corn",'Field Production'!$I$5:$I$9,"=Irrigated")`,
+    )
+    expect(formulaTextOf(payload, countySheetKey(3), 1, 'acres:corn')).toBe('SUM($C$6:$C$6)')
+    expect(auditSection(payload, countySheetKey(3)).groups!.map((g) => g.label)).toEqual(['', 'Certified Irrigated Acres', 'Irrigated Production', 'Yield per Acre'])
+    expect(rowsOf(payload, countySheetKey(3))[0].fsa).toBe('1234')
+  })
+
+  it('two farm records that share a name in one county are one row, their FSA numbers listed together', () => {
+    const twin = farm('f-home2', 'Home Place Farm', 'lawrence', '9999')
+    const ri2 = reportInput({ farms: [...farms, twin], fields: [...fields, field('home2', 'Home Annex', 'f-home2', 4, 0)], plantings: [...plantings, planting('p-home2', 'home2', 4, 0)], loads: [...loads, load('l20', '2026-09-15', 'home2', 44800, 15.0)] })
+    const rep2 = buildProductionReport(ri2)
+    const p2 = buildProductionAuditPayload(auditInput(ri2, { report: rep2 }))
+    const li = rep2.detailSheets.findIndex((d) => d.sheetName === 'Lawrence County Irrigated')
+    const rows = rowsOf(p2, countySheetKey(li))
+    expect(rows.map((r) => [r.farm, r.fsa])).toEqual([['Home Place Farm', '1234, 9999'], ['Total', '']])
+    near(rows[0]['acres:corn'], 14); near(rows[0]['prod:corn'], 2810); near(rows[1]['prod:corn'], 2810)
+    near(rows[1]['prod:corn'], rep2.summaryRows[li].byCrop.get('corn')!.bu)
   })
 
   it('every evaluated Summary number equals the on-screen report for the same fixture', () => {
@@ -240,12 +291,18 @@ describe('audit workbook — the corn fixture (measured basis)', () => {
     for (const ws of wb.worksheets) {
       expect(ws.model.merges ?? []).toEqual([])
       expect(ws.views[0].showGridLines).toBe(false)
-      expect(ws.pageSetup.orientation).toBe('landscape')
+      expect(['landscape', 'portrait']).toContain(ws.pageSetup.orientation)
       expect(ws.pageSetup.fitToWidth).toBe(1)
+      // Freeze panes: the header and its short title block — never the window.
+      const view = ws.views[0]
+      expect(view.state).toBe('frozen')
+      expect(view.ySplit).toBeGreaterThan(0)
+      expect(view.ySplit).toBeLessThanOrEqual(MAX_FROZEN_ROWS)
       expect(ws.pageSetup.printTitlesRow).toMatch(/^\d+:\d+$/)
       expect(ws.headerFooter.oddFooter).toContain('page &P of &N')
       const cfs = ws.conditionalFormattings ?? []
-      expect(cfs.some((cf: any) => cf.rules.some((r: any) => r.type === 'expression' && r.formulae[0] === 'MOD(ROW(),2)=0'))).toBe(true) // eslint-disable-line @typescript-eslint/no-explicit-any
+      // Banding on every data table; the Notes page is prose and carries none.
+      expect(cfs.some((cf: any) => cf.rules.some((r: any) => r.type === 'expression' && r.formulae[0] === 'MOD(ROW(),2)=0'))).toBe(ws.name !== 'Notes') // eslint-disable-line @typescript-eslint/no-explicit-any
       ws.eachRow((row: any) => row.eachCell((c: any) => { // eslint-disable-line @typescript-eslint/no-explicit-any
         const v = c.value
         if (v && typeof v === 'object' && 'formula' in v) {
@@ -257,34 +314,59 @@ describe('audit workbook — the corn fixture (measured basis)', () => {
         if (c.font?.color?.argb === 'FF0000FF') blue++
         if (c.note) notes++ // never: comment popups would cover the data
         if (c.font) expect(c.font.name).toBe('Calibri')
+        expect(v).not.toBe('') // a blank is an empty cell, never an empty string
       }))
     }
     expect(formulas).toBeGreaterThan(40); expect(blue).toBeGreaterThan(20); expect(notes).toBe(0)
     // The column explanations live on the Notes tab instead.
-    const guide = rowsOf(payload, AUDIT.notes).filter((r) => /^(Load Data|Field Production|Summary) — /.test(String(r.item)))
+    const guide = rowsOf(payload, AUDIT.notes).filter((r) => /^(Load Data|Field Production|Summary|County sheets) — /.test(String(r.item)))
     expect(guide.length).toBeGreaterThan(20)
     expect(guide.some((r) => String(r.item).startsWith('Load Data — Dry bu: Wet bu shrunk to base moisture'))).toBe(true)
     const ld = wb.getWorksheet('Load Data')
+    // Load Data: title, link + one line, thin spacer, header on row 4 — frozen with Date + Our ticket #.
+    expect(ld.getCell('A1').value).toBe('Load Data')
+    expect(ld.getCell('A2').value).toMatchObject({ text: '← Summary', hyperlink: "#'Summary'!A1" })
+    expect(ld.getRow(3).height).toBe(6)
     expect(ld.getRow(4).getCell(1).value).toBe('Date')
     expect(ld.getRow(4).getCell(1).fill.fgColor.argb).toBe('FF0B4A24')
-    expect(ld.getRow(4).height).toBe(30)
     expect(ld.rowCount - 4).toBe(7)
     expect(ld.autoFilter).toEqual({ from: { row: 4, column: 1 }, to: { row: 11, column: 28 } })
-    expect(ld.views[0]).toMatchObject({ ySplit: 4, xSplit: 2 })
+    expect(ld.views[0]).toMatchObject({ state: 'frozen', ySplit: 4, xSplit: 2, activeCell: 'C5' })
+    // A load's date is a real date; its record is a link that reads "Open", never an id.
+    expect(ld.getCell('A5').value).toEqual(new Date(Date.UTC(2026, 8, 16)))
+    expect(ld.getCell('A5').numFmt).toBe('m/d/yyyy')
+    expect(ld.getCell('D5').value).toMatchObject({ text: 'Open' })
+    // The Summary opens on its table: header on row 5, frozen with County / State / Practice.
     const sm = wb.getWorksheet('Summary')
     expect(sm.properties.tabColor.argb).toBe('FF36B449')
-    expect(sm.getCell('A1').value).toBe('Turnrow Farm')
-    expect(sm.getCell('E19').value).toMatchObject({ result: 2010 })
-    expect(sm.getCell('E19').numFmt).toBe('#,##0;(#,##0);"–"')
-    expect(sm.getCell('D19').numFmt).toBe('#,##0.00;(#,##0.00);"–"')
-    expect(sm.getCell('A15').value).toBe('County')
-    expect(sm.getRow(14).height).toBe(45)
+    expect(sm.getCell('A1').value).toBe('2026 Crop Insurance Production Report')
+    expect(sm.getCell('A5').value).toBe('County')
+    expect(sm.views[0]).toMatchObject({ state: 'frozen', ySplit: 5, xSplit: 3, activeCell: 'D6' })
+    expect(sm.autoFilter).toBeFalsy()
+    expect(sm.getCell('E9').value).toMatchObject({ result: 2010 })
+    expect(sm.getCell('E9').numFmt).toBe('#,##0;(#,##0);"–"')
+    expect(sm.getCell('D9').numFmt).toBe('#,##0.00;(#,##0.00);"–"')
+    expect(sm.getCell('A12').value).toBe('Every number above is a formula. Click a cell to see where it comes from; the tabs listed here hold the farms, fields and scale tickets behind it.')
+    expect(sm.getCell('A15').value).toMatchObject({ text: 'Colbert County Dryland', hyperlink: "#'Colbert County Dryland'!A1" })
+    // A county sheet: the farm rows the screen shows, frozen under Farm + FSA farm #.
+    const li = wb.getWorksheet('Lawrence County Irrigated')
+    expect(li.properties.tabColor.argb).toBe('FF36B449')
+    expect(li.getCell('A1').value).toBe('Lawrence County — Irrigated')
+    expect([li.getCell('A5').value, li.getCell('B5').value, li.getCell('C5').value, li.getCell('D5').value, li.getCell('E5').value]).toEqual(['Farm', 'FSA farm #', 'Corn', 'Corn (bu)', 'Corn (bu/ac)'])
+    expect([li.getCell('A6').value, li.getCell('B6').value]).toEqual(['Home Place Farm', '1234'])
+    expect(li.getCell('D6').value).toMatchObject({ result: 2010 })
+    expect(li.views[0]).toMatchObject({ state: 'frozen', ySplit: 5, xSplit: 2 })
     const cfSm = sm.conditionalFormattings.find((cf: any) => cf.rules.some((r: any) => r.type === 'cellIs')) // eslint-disable-line @typescript-eslint/no-explicit-any
     expect(cfSm).toBeUndefined() // no check column on Summary
     const notesWs = wb.getWorksheet('Notes')
     expect(notesWs.properties.tabColor.argb).toBe('FF9CA3AF')
     expect(notesWs.conditionalFormattings.some((cf: any) => cf.rules.some((r: any) => r.type === 'cellIs' && r.formulae[0] === '"CHECK"'))).toBe(true) // eslint-disable-line @typescript-eslint/no-explicit-any
     expect(ld.getCell('D5').value).toMatchObject({ hyperlink: 'https://app.turnrow.farm/loads/l4' })
+    // The Notes page reads as prose: headings, wrapped paragraphs, no filter buttons.
+    expect(notesWs.autoFilter).toBeFalsy()
+    expect(notesWs.getCell('A5').value).toBe('How this workbook is built')
+    expect(notesWs.getCell('A6').alignment.wrapText).toBe(true)
+    expect(notesWs.getRow(6).height).toBeGreaterThan(15)
     expect(wb.getWorksheet('Field Production').getCell('B9').value).toMatchObject({ text: 'Home Place', hyperlink: "#'Load Data'!A8" })
   })
 })
@@ -332,7 +414,10 @@ describe('audit workbook — balanced to settlements', () => {
     const byField = Object.fromEntries(report.resolved.map((r) => [r.fieldDisplayName, r.totalBu]))
     near(byField['Home Place'], 1977.533, 2); near(byField.Pruitt, 1672.540, 2); near(byField.Wheeler, 885.463, 2); near(byField.Moore, 1180.617, 2); near(byField.Tweedy, 983.847, 2)
     // Workbook: the tabs, the live balance, the balanced columns.
-    expect(payload.sections.map((s) => s.title)).toEqual(['Summary', 'Settlement Balance', 'Field Production', 'Load Data', 'Combine Entries', 'Settlements', 'Unsettled Deliveries', 'Notes'])
+    expect(payload.sections.map((s) => s.title)).toEqual([
+      'Summary', 'Colbert County Dryland', 'Colbert County Irrigated', 'Lawrence County Dryland', 'Lawrence County Irrigated',
+      'Settlement Balance', 'Field Production', 'Load Data', 'Combine Entries', 'Settlements', 'Unsettled Deliveries', 'Notes',
+    ])
     expect(payload.filename).toBe('Turnrow_Crop_Insurance_Production_2026_All_Balanced_2026-10-14')
     const bal = rowsOf(payload, AUDIT.balance)
     const item = (s: string) => bal.find((r) => r.item === s)!
@@ -351,12 +436,14 @@ describe('audit workbook — balanced to settlements', () => {
     expect(formulaTextOf(payload, AUDIT.fieldProduction, fp.indexOf(home), 'balanced_production')).toBe("T9*'Settlement Balance'!$B$10")
     const smw = rowsOf(payload, AUDIT.summary)
     near(smw[3]['prod:corn'], 1977.533, 2); near(smw[3]['mprod:corn'], 2010); near(smw[4]['prod:corn'], 6700, 6); near(smw[4]['mprod:corn'], 6810)
-    expect(auditSection(payload, AUDIT.summary).groups!.map((g) => g.label)).toEqual(['', 'Certified Acres', 'Balanced production', 'Balanced yield/acre', 'Measured production', 'Measured yield/acre'])
+    expect(auditSection(payload, AUDIT.summary).groups!.map((g) => g.label)).toEqual(['', 'Certified Acres', 'Balanced Production', 'Balanced Yield per Acre', 'Measured Production', 'Measured Yield per Acre'])
+    // The county sheets carry the balanced production too: Lawrence County Irrigated, Home Place Farm.
+    const liIdx = report.detailSheets.findIndex((d) => d.sheetName === 'Lawrence County Irrigated')
+    near(rowsOf(payload, countySheetKey(liIdx))[0]['prod:corn'], 1977.533, 2)
+    expect(auditSection(payload, countySheetKey(liIdx)).groups!.map((g) => g.label)).toEqual(['', 'Certified Irrigated Acres', 'Balanced Irrigated Production', 'Yield per Acre'])
     const notes = rowsOf(payload, AUDIT.notes)
     expect(notes.find((r) => r.item === 'Corn: Difference')!.check).toBe('OK')
     expect(notes.find((r) => r.item === 'Production basis')!.value).toBe('Balanced to settlements')
-    const kpi = auditSection(payload, AUDIT.summary).prelude!.find((p) => p.kind === 'kpi' && p.cells[0] === 'Corn settlement factor')!
-    expect((kpi.cells[1] as { v: number }).v).toBeCloseTo(0.983847, 6)
   })
 
   it('not all sold: settled 4,800 + unsettled 1,200 + bins 700 = 6,700 — same factor, same fields, no "equals bushels paid" check', () => {
@@ -556,7 +643,14 @@ describe('audit workbook — cotton', () => {
         yieldFor: () => ({ yardSeedLbs: 10000, estimatedLintLbs: 4000, actualLintLbs: 35000, turnout: { fraction: 0.4, pct: 40, label: '40.0% from your ginned cotton' } }),
       },
     }))
-    expect(payload.sections.map((s) => s.title)).toEqual(['Summary', 'Field Production', 'Load Data', 'Gin Receipts', 'Notes'])
+    expect(payload.sections.map((s) => s.title)).toEqual(['Summary', 'Lawrence County Dryland', 'Field Production', 'Load Data', 'Gin Receipts', 'Notes'])
+    // Receipts read as the gin numbers them (the statement number when there is one) — never a record id.
+    expect(rowsOf(payload, AUDIT.ginReceipts).map((r) => r.receipt)).toEqual(['S-1001', 'R-2', '(estimate)'])
+    expect(auditSection(payload, AUDIT.ginReceipts).columns.some((c) => /id$/i.test(c.label))).toBe(false)
+    // The county sheet shows the cotton in lint pounds, as the screen does.
+    const county = rowsOf(payload, countySheetKey(0))
+    expect(county.map((r) => [r.farm, r['prod:cotton']])).toEqual([['Home Place Farm', 39000], ['Total', 39000]])
+    expect(auditSection(payload, countySheetKey(0)).columns.map((c) => c.label)).toEqual(['Farm', 'FSA farm #', 'Cotton', 'Cotton (lbs)', 'Cotton (lbs/ac)'])
     const gr = rowsOf(payload, AUDIT.ginReceipts)
     expect(gr.map((r) => r.kind)).toEqual([GINNED_KIND, GINNED_KIND, ESTIMATED_KIND])
     near(gr[0].lint_lbs, 20000); near(gr[1].lint_lbs, 15000); near(gr[2].lint_lbs, 4000); near(gr[2].turnout, 40)

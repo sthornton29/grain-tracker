@@ -29,7 +29,7 @@ import {
   type CommodityPaymentResult, type MyaState,
 } from '@/lib/government-payments'
 import { resolveProgramYearConfig, programConfigNotice } from '@/lib/program-config'
-import type { ExportPayload } from '@/lib/exports'
+import type { ExportCell, ExportPayload } from '@/lib/exports'
 import type {
   Farm, Entity, County, FieldPlanting, CoveredCommodity, FarmBaseAcres, ArcPlcElection, ArcPlcPriceData,
   ArcPlcPayment, ArcPlcElectionType, ArcBenchmarkData, MyaMonthlyPrice, ProgramYearConfig,
@@ -354,44 +354,70 @@ export default function ArcPlcDecisionAid({ onPayloadChange, headerActions }: Pr
     : viewerAllEntitiesLabel(viewer, entities)
 
   function buildExportPayload(): ExportPayload {
+    // The by-crop verdict in the screen's words. With no verdict, say which
+    // side has no number (the screen prints that in the All PLC / All ARC-CO
+    // cell, which is a number column here).
+    const verdictCell = (s: CropSummaryRow): ExportCell => {
+      if (s.verdict === 'PLC') return { v: 'Favors PLC', tone: 'favorable' }
+      if (s.verdict === 'ARC') return { v: 'Favors ARC-CO', tone: 'favorable' }
+      if (s.verdict === 'TOSS') return { v: s.plcTotal === 0 && s.arcTotal === 0 ? 'Neither pays' : 'Toss-up', tone: 'neutral' }
+      const why = s.plcTotal == null ? 'needs the marketing-year price'
+        : s.arcTotal == null ? (s.arcNoBenchmark > 0 && s.arcNoMya === 0 ? 'no county benchmark' : 'needs the marketing-year price')
+          : ''
+      return { v: why, tone: 'warning' }
+    }
+    // The program the comparison favors is green, as on screen.
+    const projected = (net: number | null, favored: boolean): ExportCell =>
+      net == null ? '' : favored ? { v: Math.round(net), tone: 'favorable' } : Math.round(net)
     return {
       title: 'ARC/PLC Decision Aid',
-      filters: `Crop year: ${cropYear || '—'}${entityName ? ` · Entity: ${entityName}` : ''}${myaPct !== 0 ? ` · MYA what-if: ${myaPct > 0 ? '+' : ''}${myaPct}%` : ''} · ARC guarantee ${Math.round(programCfg.arcGuaranteePct * 100)}% / cap ${Math.round(programCfg.arcPaymentCapPct * 100)}% · toss-up within $${TOSS_UP_BAND_PER_ACRE}/base acre`,
+      // The report header's line, then what else shapes the numbers.
+      filters: filterSummaryOf(
+        cropYear === '' ? null : `${cropYear} Program Year`,
+        entityName ?? 'All Entities',
+        myaPct !== 0 ? `MYA what-if ${myaPct > 0 ? '+' : ''}${myaPct}%` : null,
+        `ARC guarantee ${Math.round(programCfg.arcGuaranteePct * 100)}% / cap ${Math.round(programCfg.arcPaymentCapPct * 100)}%`,
+        `toss-up within $${TOSS_UP_BAND_PER_ACRE}/base acre`,
+      ),
       sections: [{
         // The page a farmer brings to the FSA office — the by-crop comparison
         // leads the export.
         title: 'Program Comparison by Crop',
         columns: [
-          { label: 'Commodity' }, { label: 'Farms', align: 'right', format: 'int' }, { label: 'Base Acres', align: 'right', format: 'int' },
-          { label: 'All PLC', align: 'right', format: 'usd0' }, { label: 'All ARC-CO', align: 'right', format: 'usd0' }, { label: 'Diff $/ac', align: 'right', format: 'dec2' },
-          { label: 'Verdict' }, { label: 'Farms Not Counted' },
-          { label: 'MYA', align: 'right', format: 'price' }, { label: 'Eff. Ref Price', align: 'right', format: 'price' }, { label: 'PLC Spread', align: 'right', format: 'price' },
+          { label: 'Commodity' }, { label: 'Farms', align: 'right', format: 'int' }, { label: 'Base Acres', align: 'right', format: 'acres' },
+          { label: 'All PLC', align: 'right', format: 'usd0' }, { label: 'All ARC-CO', align: 'right', format: 'usd0' }, { label: 'Diff $/ac', align: 'right', format: 'usd2' },
+          { label: 'Verdict' },
+          { label: 'MYA', align: 'right', format: 'price' }, { label: 'MYA Basis' }, { label: 'Effective Reference Price', align: 'right', format: 'price' }, { label: 'PLC Spread', align: 'right', format: 'price' },
           { label: 'ARC-CO Pays Below', align: 'right', format: 'price' },
+          { label: 'Farms Not Counted' },
         ],
-        rows: cropSummary.map((s) => [
-          s.commodity.name, s.farms, Math.round(s.baseAcres),
+        rows: cropSummary.map((s): ExportCell[] => [
+          s.commodity.name, s.farms, s.baseAcres,
           s.plcTotal != null ? Math.round(s.plcTotal) : '', s.arcTotal != null ? Math.round(s.arcTotal) : '',
           s.diffPerAcre != null ? s.diffPerAcre : '',
-          {
-            v: s.verdict === 'PLC' ? 'Favors PLC' : s.verdict === 'ARC' ? 'Favors ARC-CO' : s.verdict === 'TOSS' ? 'Toss-up' : 'needs the marketing-year price',
-            tone: (s.verdict === 'PLC' || s.verdict === 'ARC' ? 'favorable' : s.verdict === 'TOSS' ? 'neutral' : 'warning') as 'favorable' | 'neutral' | 'warning',
-          },
-          notCountedText(s),
-          s.myaPrice != null ? s.myaPrice : '', s.effRef, s.spread != null ? s.spread : '',
+          verdictCell(s),
+          s.myaPrice != null ? s.myaPrice : '', MYA_STATE_LABEL[s.myaState], s.effRef,
+          s.spread == null ? '' : s.spread > 0 ? { v: s.spread, tone: 'favorable' } : s.spread,
           s.arcTriggerHigh != null ? s.arcTriggerHigh : '',
+          notCountedText(s),
         ]),
       }, {
-        title: 'Projected Payments by Farm × Commodity',
+        title: 'By Farm and Commodity',
+        // Farm and commodity together name a row.
+        freezeColumns: 2,
         columns: [
-          { label: 'Farm' }, { label: 'Commodity' }, { label: 'County' }, { label: 'Base Acres', align: 'right', format: 'int' }, { label: 'PLC Yield', align: 'right', format: 'yield' },
-          { label: 'PLC Projected', align: 'right', format: 'usd0' }, { label: 'ARC-CO Projected', align: 'right', format: 'usd0' }, { label: 'ARC Basis' }, { label: 'Recommendation' }, { label: 'Current Election' },
+          { label: 'Farm' }, { label: 'Commodity' }, { label: 'County' }, { label: 'Base Acres', align: 'right', format: 'acres' }, { label: 'PLC Yield', align: 'right', format: 'yield' },
+          { label: 'PLC Projected', align: 'right', format: 'usd0' }, { label: 'ARC-CO Projected', align: 'right', format: 'usd0' }, { label: 'ARC-CO Basis' }, { label: 'Recommendation' }, { label: 'Current Election' },
           { label: 'PLC Pays Below', align: 'right', format: 'price' }, { label: 'ARC-CO Pays Below', align: 'right', format: 'price' },
         ],
-        rows: rows.map((r) => [
-          r.farmName, r.commodity.name, r.county ?? '', Math.round(r.base.base_acres), Number(r.base.plc_yield),
-          r.plcNet != null ? Math.round(r.plcNet) : '', r.arcNet != null ? Math.round(r.arcNet) : '',
-          r.arc.arcMethod === 'engine' ? (r.arc.arcDetail?.capped ? 'County figures (capped)' : 'County figures') : r.arc.computable ? 'Flat $/acre estimate' : arcMissingText(r),
-          recommendationText(r), ELECTION_LABEL[r.election],
+        rows: rows.map((r): ExportCell[] => [
+          r.farmName, r.commodity.name, r.county ?? '', Number(r.base.base_acres), Number(r.base.plc_yield),
+          projected(r.plcNet, r.favors === 'PLC'), projected(r.arcNet, r.favors === 'ARC'),
+          r.arc.arcMethod === 'engine'
+            ? (r.arc.arcDetail?.capped ? 'County figures (capped)' : 'County figures')
+            : { v: r.arc.computable ? 'Flat $/acre estimate' : arcMissingText(r), tone: 'warning' },
+          r.favors == null ? '' : r.favors === 'TOSS' ? recommendationText(r) : { v: recommendationText(r), tone: 'favorable' },
+          ELECTION_LABEL[r.election],
           r.plcTriggerPrice, r.arcTriggerPrice != null ? r.arcTriggerPrice : '',
         ]),
       }],

@@ -1,7 +1,7 @@
 ---
 page_route: /reports/insurance-claim-check
 title: Claim Check
-updated: 2026-11-03
+updated: 2026-11-17
 keywords: claim check, trigger yield, trigger yield report, open a claim, claim, RP, YP, APH, approved yield, enterprise unit, basic unit, agent, adjuster, landlord share, reply to agent
 ---
 ## What this page is for
@@ -14,6 +14,7 @@ After harvest your crop insurance agent may send a **trigger yield report** and 
 - Tap **Read your agent's trigger yield report** and upload the PDF your agent sent. Turnrow reads each unit's trigger yield, acres, APH, and approved yield. Check that each insured is matched to the right entity — or to a landowner, when a landlord insures their own share — then save. When your agent sends an updated or later report (soybeans in December, for example), read it the same way; it replaces only the crops it covers.
 - Each row is one unit. **Below trigger** means the yield so far is under the trigger — talk to your agent about opening a claim. **Close to trigger** means within 10% above it. Units still being harvested say **not final**.
 - Tap a unit to see the fields behind it and anything that needs checking.
+- **Export Excel / PDF / Print** gives you the same table to send along: one sheet of units grouped by insured, and a **By Field** sheet listing the farms and fields behind each unit with their acres, production, yield and harvest status.
 - Tap **Write reply to your agent**. Units below their trigger are already marked "ask to open"; change any box in the table. Add your agent's first name and how you sign, edit the text if you like, then **Copy reply** and paste it into your email.
 
 ## What the numbers mean

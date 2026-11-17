@@ -1,7 +1,7 @@
 ---
 page_route: /reports
 title: Reports Overview
-updated: 2026-10-20
+updated: 2026-11-17
 keywords: reports, exports, excel, pdf, print, marketing, revenue, cash flow, insurance, government payments, yields
 ---
 ## What this page is for
@@ -37,6 +37,17 @@ Every report has the same layout: the title with a plain line underneath naming 
 The landing page itself does no math — each report computes its own numbers and explains them on its own page. What the reports share is consistency: the entity filter means the same thing everywhere, the Marketing Dashboard and Revenue Projections are built to agree with each other, and the Cash Flow Forecast and Claims Monitor use the same insurance estimates.
 
 Every report that opens inside the Reports area has **Export Excel**, **Export PDF**, and **Print** buttons. Exports always reflect the filters you have set on screen — the spreadsheet or PDF matches what you are looking at, including a filter line at the top so the recipient knows exactly what they are seeing.
+
+Every Excel file is laid out the same way, so it reads cleanly for you and for whoever you send it to:
+
+- When a report has headline figures at the top of the screen, they are on a **Summary** sheet first; the tables follow on their own sheets.
+- Each sheet starts with the report's name and one line naming the filters and when it was made, then the table.
+- The column headings stay in place as you scroll down. On a wide table the column that names each row (the farm, the date) stays in place as you scroll right.
+- Numbers are real numbers — you can sort, filter and add them up — and dates are real dates.
+- Subtotals and totals are shaded and bold; long notes wrap inside their column instead of being cut off.
+- It prints on one page wide, with the headings repeated on every page and the page number at the bottom.
+
+A PDF keeps a group's label with its rows, never splits a short table across two pages, and numbers its pages "Page 1 of 3".
 
 ## Common questions
 
