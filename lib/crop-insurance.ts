@@ -12,6 +12,7 @@ import { buildContractSymbol, type Commodity } from '@/lib/hedging'
 import { cropToHedgeCommodity } from '@/lib/contracts'
 import { DEFAULT_SCO_TRIGGER } from '@/lib/program-config'
 import { computeBushels } from '@/lib/shrink'
+import { practiceOf, resolvePracticeBreakout, type FieldCropAgg } from '@/lib/yields'
 import type {
   HarvestPriceEstimate, CropInsurancePolicy, CropInsuranceSco, CropInsuranceEco,
   CropInsuranceStax, CropInsuranceMco, CountyYieldAssumption,
@@ -1139,31 +1140,61 @@ export type HarvestResolution = {
   supersededManual?: number | null
 }
 
-// Per-practice ACTUAL yield from the planting irrigated/dryland bushel breakout,
-// keyed `cropId|practice`. Only where the breakout is entered and acres > 0.
+// Per-practice ACTUAL yield, keyed `cropId|practice`: the practice's dry
+// bushels ÷ its acres across EVERY planting of the crop year (2026-11-18) — a
+// field that is all irrigated or all dryland puts its whole production
+// (loads / combine entry, `aggByKey` = lib/yields fieldCropAggregates) on its
+// side; a mixed field adds each side of its split (lib/yields
+// resolvePracticeBreakout — the manual allocation or fully tagged loads).
 //
-// Cotton is left out (2026-11-18): a mixed cotton field's split (lint lbs,
-// lib/yields resolveCottonPracticeBreakout) is for the Yields page and the
-// Production Report. Here only the split fields would count, so the dryland
-// corners of two pivots would stand in for every dryland cotton acre — cotton
-// projections keep their expected / APH yields as before. `crops` names the
-// cotton crops; without it nothing is left out.
-export function practiceActualYieldByCrop(
-  plantings: ReadonlyArray<Pick<FieldPlanting, 'crop_id' | 'season_year' | 'irrigated_acres' | 'dryland_acres' | 'irrigated_bushels' | 'dryland_bushels'>>,
-  cropYear: number,
-  crops?: ReadonlyArray<Pick<Crop, 'id' | 'name'>>,
-): Map<string, number> {
-  const cottonIds = new Set((crops ?? []).filter((c) => /cotton/i.test(c.name)).map((c) => c.id))
-  const agg = new Map<string, { bu: number; ac: number }>()
-  const add = (key: string, b: number, a: number) => { const c = agg.get(key) ?? { bu: 0, ac: 0 }; c.bu += b; c.ac += a; agg.set(key, c) }
-  for (const p of plantings) {
-    if (p.season_year !== cropYear) continue
-    if (cottonIds.has(p.crop_id)) continue
-    if (p.irrigated_bushels != null && Number(p.irrigated_acres) > 0) add(`${p.crop_id}|irrigated`, Number(p.irrigated_bushels), Number(p.irrigated_acres))
-    if (p.dryland_bushels != null && Number(p.dryland_acres) > 0) add(`${p.crop_id}|non_irrigated`, Number(p.dryland_bushels), Number(p.dryland_acres))
+// It used to read only the split fields' irrigated_bushels / dryland_bushels,
+// so ONE mixed field's corners set the projected yield for every acre of that
+// practice. Now a practice has no actual while any mixed field on it is not
+// split yet (the split fields alone are not the practice) — the projection
+// then falls back to the crop's overall actual, like a crop with no practice
+// data — and none until it has bushels.
+//
+// Cotton is left out: its lint is not in the grain load aggregates (lint lives
+// in the cotton model), so its pure fields would read as zero. Cotton
+// projections keep their expected / APH yields as before.
+export function practiceActualYieldByCrop(args: {
+  plantings: ReadonlyArray<Pick<FieldPlanting, 'field_id' | 'crop_id' | 'season_year' | 'irrigated_acres' | 'dryland_acres' | 'irrigated_bushels' | 'dryland_bushels' | 'yield_breakout_entered'>>
+  cropYear: number
+  aggByKey: ReadonlyMap<string, FieldCropAgg>
+  /** Names the cotton crops, which are left out. */
+  crops: ReadonlyArray<Pick<Crop, 'id' | 'name'>>
+}): Map<string, number> {
+  const cottonIds = new Set(args.crops.filter((c) => /cotton/i.test(c.name)).map((c) => c.id))
+  const sums = new Map<string, { bu: number; ac: number }>()
+  const unknown = new Set<string>()
+  const add = (key: string, bu: number, ac: number) => {
+    if (!(ac > 0)) return
+    const c = sums.get(key) ?? { bu: 0, ac: 0 }
+    c.bu += bu; c.ac += ac
+    sums.set(key, c)
+  }
+  for (const p of args.plantings) {
+    if (p.season_year !== args.cropYear || cottonIds.has(p.crop_id)) continue
+    const irrKey = `${p.crop_id}|irrigated`
+    const dryKey = `${p.crop_id}|non_irrigated`
+    const irrAc = Number(p.irrigated_acres) || 0
+    const dryAc = Number(p.dryland_acres) || 0
+    const agg = args.aggByKey.get(`${p.field_id}|${p.crop_id}|${p.season_year}`)
+    const kind = practiceOf(p)
+    if (kind === 'mixed') {
+      const b = resolvePracticeBreakout(p, agg)
+      if (b.source == null) { unknown.add(irrKey); unknown.add(dryKey); continue }
+      add(irrKey, Number(b.irrigatedBushels) || 0, irrAc)
+      add(dryKey, Number(b.drylandBushels) || 0, dryAc)
+    } else if (kind === 'pure-irr') {
+      add(irrKey, agg?.dryBu ?? 0, irrAc)
+    } else {
+      // All dryland — a planting with no practice acres at all adds nothing.
+      add(dryKey, agg?.dryBu ?? 0, dryAc)
+    }
   }
   const m = new Map<string, number>()
-  for (const [k, v] of agg) if (v.ac > 0) m.set(k, v.bu / v.ac)
+  for (const [k, v] of sums) if (!unknown.has(k) && v.ac > 0 && v.bu > 0) m.set(k, v.bu / v.ac)
   return m
 }
 
@@ -1393,7 +1424,11 @@ export function projectInsuranceIndemnities(args: {
   scos: readonly CropInsuranceSco[]
   ecos: readonly CropInsuranceEco[]
   assumptions: readonly CropAssumption[]
-  plantings: ReadonlyArray<Pick<FieldPlanting, 'crop_id' | 'season_year' | 'irrigated_acres' | 'dryland_acres' | 'irrigated_bushels' | 'dryland_bushels'>>
+  plantings: ReadonlyArray<Pick<FieldPlanting, 'field_id' | 'crop_id' | 'season_year' | 'irrigated_acres' | 'dryland_acres' | 'irrigated_bushels' | 'dryland_bushels' | 'yield_breakout_entered'>>
+  /** Per field × crop × year production (lib/yields fieldCropAggregates, the
+   *  same aggregates the caller hands withLoadBreakouts) — the per-practice
+   *  actual yield's bushels. */
+  aggByKey: ReadonlyMap<string, FieldCropAgg>
   // Crop-level actual yield by crop_id (from actualYieldByCropFromLoads).
   actualYieldByCrop: ReadonlyMap<string, number>
   harvestEstimates: readonly HarvestPriceEstimate[]
@@ -1421,20 +1456,23 @@ export function projectInsuranceIndemnities(args: {
     cropIds, cropYear: args.cropYear, policies: yearPolicies, estimates: args.harvestEstimates, liveByCrop: args.liveHarvestByCrop, crops: args.crops,
     keepManualCropIds: args.keepManualCropIds,
   })
-  const practiceActual = practiceActualYieldByCrop(args.plantings, args.cropYear, args.crops)
+  const practiceActual = practiceActualYieldByCrop({ plantings: args.plantings, cropYear: args.cropYear, aggByKey: args.aggByKey, crops: args.crops ?? [] })
   const scoBy = new Map(args.scos.map((s) => [s.policy_id, s]))
   const ecoBy = new Map(args.ecos.map((e) => [e.policy_id, e]))
   const staxBy = new Map((args.staxes ?? []).map((s) => [s.policy_id, s]))
   const mcoBy = new Map((args.mcos ?? []).map((m) => [m.policy_id, m]))
   const slider = 1 + (args.globalYieldPct ?? 0) / 100
 
-  // Per-practice default (expected breakout / actual / mean APH), respecting
-  // harvest_complete (prefer actuals once harvest is in).
+  // Per-practice yield (expected breakout / actual / mean APH), respecting
+  // harvest_complete (prefer actuals once harvest is in). The actual is the
+  // practice's own when every field on it is known, else the crop's overall.
+  // Mid-harvest the expected yield stands: a practice's bushels so far over
+  // all its acres would read far too low.
   function defaultPracticeYield(cropId: string, practice: Practice): number {
     const a = args.assumptions.find((x) => x.crop_id === cropId && x.crop_year === args.cropYear)
     const blended = a?.expected_yield != null ? Number(a.expected_yield) : null
     const harvestComplete = !!a?.harvest_complete
-    const actual = args.actualYieldByCrop.get(cropId) ?? null
+    const actual = practiceActual.get(`${cropId}|${practice}`) ?? args.actualYieldByCrop.get(cropId) ?? null
     const expectedPractice = practice === 'irrigated'
       ? (a?.expected_yield_irr != null ? Number(a.expected_yield_irr) : blended)
       : (a?.expected_yield_dry != null ? Number(a.expected_yield_dry) : blended)
@@ -1447,11 +1485,7 @@ export function projectInsuranceIndemnities(args: {
   return yearPolicies.map((p) => {
     const practice = (p.practice ?? 'non_irrigated') as Practice
     const yOverride = args.yieldOverrideByPolicy?.get(p.id)
-    const baseYield = yOverride != null
-      ? yOverride
-      : (practiceActual.get(`${p.crop_id}|${practice}`)
-        ?? defaultPracticeYield(p.crop_id, practice)
-        ?? Number(p.aph_yield))
+    const baseYield = yOverride != null ? yOverride : defaultPracticeYield(p.crop_id, practice)
     const assumedYield = baseYield * slider
 
     const harvest = harvestByCrop.get(p.crop_id) ?? { price: Number(p.projected_price), source: 'projected' as const, stale: false, priceDate: null }

@@ -207,9 +207,10 @@ export function auditPolicyIndemnities(inp: AuditInputs): AuditResult {
 
 export type YieldBasisAudit = { value: number; source: 'actual_practice' | 'expected_practice' | 'expected_blended' | 'actual_crop' | 'mean_aph' }
 
-/** Fresh re-derivation of the per-practice yield basis order: actual practice
- *  breakout → per-practice expected (blended fallback; actuals once harvest
- *  is complete) → mean APH. Compared against the production assumedYield. */
+/** Fresh re-derivation of the per-practice yield basis order: per-practice
+ *  expected (blended fallback) until harvest is complete → then the actual —
+ *  this practice's own (every field on it known), else the crop's → mean APH.
+ *  Compared against the production assumedYield. */
 export function auditYieldBasis(args: {
   practice: 'irrigated' | 'non_irrigated'
   practiceActualYield: number | null
@@ -220,17 +221,18 @@ export function auditYieldBasis(args: {
   actualCropYield: number | null
   meanAph: number
 }): YieldBasisAudit {
-  if (args.practiceActualYield != null) return { value: args.practiceActualYield, source: 'actual_practice' }
   const expectedPractice = args.practice === 'irrigated'
     ? args.expectedYieldIrr ?? args.expectedYieldBlended
     : args.expectedYieldDry ?? args.expectedYieldBlended
-  if (expectedPractice != null && (!args.harvestComplete || args.actualCropYield == null)) {
+  const anyActual = args.practiceActualYield ?? args.actualCropYield
+  if (expectedPractice != null && (!args.harvestComplete || anyActual == null)) {
     return {
       value: expectedPractice,
       source: (args.practice === 'irrigated' ? args.expectedYieldIrr : args.expectedYieldDry) != null
         ? 'expected_practice' : 'expected_blended',
     }
   }
+  if (args.practiceActualYield != null) return { value: args.practiceActualYield, source: 'actual_practice' }
   if (args.actualCropYield != null) return { value: args.actualCropYield, source: 'actual_crop' }
   return { value: args.meanAph, source: 'mean_aph' }
 }

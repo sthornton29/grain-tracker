@@ -501,10 +501,8 @@ async function getRevenueProjection(supabase: SupabaseClient, ctx: AssistantCont
   const cropById = new Map(crops.map((c) => [c.id, c]))
   // Insurance per crop via the shared projector (assumed yields resolve inside).
   const scopedPolicies = b.scope.byEntity(policies)
-  const effPlantings = withLoadBreakouts(
-    plantings.filter((p) => p.season_year === cropYear),
-    fieldCropAggregates(loads, splits, cropById, { cropYear, combineEntries }),
-  )
+  const aggByKey = fieldCropAggregates(loads, splits, cropById, { cropYear, combineEntries })
+  const effPlantings = withLoadBreakouts(plantings.filter((p) => p.season_year === cropYear), aggByKey)
   const actualYieldByCrop = actualYieldByCropFromLoads({ loads, plantings, crops, cropYear, combineEntries })
   const projected = projectInsuranceIndemnities({
     cropYear,
@@ -512,6 +510,7 @@ async function getRevenueProjection(supabase: SupabaseClient, ctx: AssistantCont
     scos, ecos, staxes, mcos,
     assumptions,
     plantings: effPlantings,
+    aggByKey,
     actualYieldByCrop,
     harvestEstimates: estimates,
     crops,
@@ -801,16 +800,15 @@ async function getInsuranceEstimates(supabase: SupabaseClient, ctx: AssistantCon
     all<import('@/lib/types').CountyYieldAssumption>(supabase.from('county_yield_assumptions').select('*')),
   ])
   const cropById = new Map(crops.map((c) => [c.id, c]))
-  const effPlantings = withLoadBreakouts(
-    plantings.filter((p) => p.season_year === cropYear),
-    fieldCropAggregates(loads, splits, cropById, { cropYear, combineEntries }),
-  )
+  const aggByKey = fieldCropAggregates(loads, splits, cropById, { cropYear, combineEntries })
+  const effPlantings = withLoadBreakouts(plantings.filter((p) => p.season_year === cropYear), aggByKey)
   const projected = projectInsuranceIndemnities({
     cropYear,
     policies: scope.byEntity(policies),
     scos, ecos, staxes, mcos,
     assumptions,
     plantings: effPlantings,
+    aggByKey,
     actualYieldByCrop: actualYieldByCropFromLoads({ loads, plantings, crops, cropYear, combineEntries }),
     harvestEstimates: estimates,
     crops,

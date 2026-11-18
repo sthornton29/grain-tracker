@@ -36,7 +36,7 @@ import {
   type AuditResult, type AuditComparison, type InvariantCheck, type YieldBasisAudit,
 } from '@/lib/crop-insurance-audit'
 import { resolveProgramYearConfig, programConfigNotice } from '@/lib/program-config'
-import { fieldCropAggregates, withLoadBreakouts, type CombineEntryLike } from '@/lib/yields'
+import { fieldCropAggregates, withLoadBreakouts, type CombineEntryLike, type FieldCropAgg } from '@/lib/yields'
 import type { RmaLookupResult } from '@/app/api/rma-price-discovery/route'
 import { harvestTierLabel } from '@/lib/insurance-price-rows'
 import {
@@ -95,7 +95,7 @@ const bu = (n: number) => n.toLocaleString(undefined, { maximumFractionDigits: 0
 
 // Where the audit's yield basis came from, in words (the audit table and its export).
 const YIELD_SOURCE_LABEL: Record<YieldBasisAudit['source'], string> = {
-  actual_practice: 'actual · practice breakout',
+  actual_practice: 'actual · this practice',
   expected_practice: 'expected · per-practice',
   expected_blended: 'expected · blended',
   actual_crop: 'actual · crop loads',
@@ -335,16 +335,18 @@ export default function CropInsuranceClaimsReport({ onPayloadChange, headerActio
     })
   }
 
-  // Plantings with the load-derived irrigated/dryland breakout materialized —
-  // a mixed field whose loads are all practice-tagged reads exactly like one
-  // with a manual post-harvest allocation, so the per-practice yield basis
-  // (practiceActualYieldByCrop inside projectInsuranceIndemnities and the
-  // audit) sees one representation whichever path produced the split.
-  const effPlantings = useMemo(() => {
-    if (cropYear === '') return plantings
-    const agg = fieldCropAggregates(loads, splits, cropById, { cropYear, combineEntries })
-    return withLoadBreakouts(plantings, agg)
-  }, [plantings, loads, splits, cropById, cropYear, combineEntries])
+  // Per field × crop production for the year (the per-practice actual yield's
+  // bushels), and the plantings with the load-derived irrigated/dryland
+  // breakout materialized — a mixed field whose loads are all practice-tagged
+  // reads exactly like one with a manual post-harvest allocation, so the
+  // per-practice yield basis (practiceActualYieldByCrop inside
+  // projectInsuranceIndemnities and the audit) sees one representation
+  // whichever path produced the split.
+  const aggByKey = useMemo(
+    () => (cropYear === '' ? new Map<string, FieldCropAgg>() : fieldCropAggregates(loads, splits, cropById, { cropYear, combineEntries })),
+    [loads, splits, cropById, cropYear, combineEntries],
+  )
+  const effPlantings = useMemo(() => (cropYear === '' ? plantings : withLoadBreakouts(plantings, aggByKey)), [plantings, aggByKey, cropYear])
 
   // Crop-level actual yield (Σ dry bu / Σ planted ac) — shared resolver so this
   // matches the Cash Flow's safety-net exactly.
@@ -392,7 +394,7 @@ export default function CropInsuranceClaimsReport({ onPayloadChange, headerActio
     // Single source of truth shared with the Cash Flow safety-net so the two
     // pages' projected indemnity reconciles.
     const projected = projectInsuranceIndemnities({
-      cropYear, policies: yearPolicies, scos, ecos, staxes, mcos, countyAssumptions: effCountyAssumptions, assumptions: effAssumptions, plantings: effPlantings,
+      cropYear, policies: yearPolicies, scos, ecos, staxes, mcos, countyAssumptions: effCountyAssumptions, assumptions: effAssumptions, plantings: effPlantings, aggByKey,
       actualYieldByCrop, harvestEstimates: priceEstimates, liveHarvestByCrop, crops,
       scoTrigger: programCfg.scoTrigger, keepManualCropIds,
     })
@@ -400,7 +402,7 @@ export default function CropInsuranceClaimsReport({ onPayloadChange, headerActio
       policy: r.policy, comp: r.comp, harvest: harvestByCrop.get(r.policy.crop_id),
       assumedYield: r.assumedYield, base: r.base, sco: r.sco, eco: r.eco, basePremium: r.basePremium,
     }))
-  }, [cropYear, viewer.loading, viewerA.ready, yearPolicies, scos, ecos, staxes, mcos, effCountyAssumptions, effAssumptions, effPlantings, actualYieldByCrop, priceEstimates, liveHarvestByCrop, crops, programCfg, harvestByCrop])
+  }, [cropYear, viewer.loading, viewerA.ready, yearPolicies, scos, ecos, staxes, mcos, effCountyAssumptions, effAssumptions, effPlantings, aggByKey, actualYieldByCrop, priceEstimates, liveHarvestByCrop, crops, programCfg, harvestByCrop])
 
   const totals = useMemo(() => {
     return computed.reduce(
@@ -459,7 +461,7 @@ export default function CropInsuranceClaimsReport({ onPayloadChange, headerActio
   }
   const auditRows: AuditRow[] = useMemo(() => {
     if (!auditMode || cropYear === '') return []
-    const practiceActual = practiceActualYieldByCrop(effPlantings, cropYear, crops)
+    const practiceActual = practiceActualYieldByCrop({ plantings: effPlantings, cropYear, aggByKey, crops })
     return computed.map((c) => {
       const p = c.policy
       const practice = (p.practice ?? 'non_irrigated') as Practice
@@ -527,7 +529,7 @@ export default function CropInsuranceClaimsReport({ onPayloadChange, headerActio
       })
       return { c, yieldBasis, audit, cmp, invariants }
     })
-  }, [auditMode, computed, cropYear, effPlantings, effAssumptions, yearPolicies, actualYieldByCrop, effCountyAssumptions, scoByPolicy, ecoByPolicy, staxByPolicy, mcoByPolicy, programCfg, cropById, crops])
+  }, [auditMode, computed, cropYear, effPlantings, effAssumptions, yearPolicies, actualYieldByCrop, effCountyAssumptions, scoByPolicy, ecoByPolicy, staxByPolicy, mcoByPolicy, programCfg, cropById, crops, aggByKey])
 
   // Headline summary cards from the already-computed totals (no new math).
   const summaryCards: SummaryCardData[] = useMemo(() => [

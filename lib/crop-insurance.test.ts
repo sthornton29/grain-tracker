@@ -26,6 +26,7 @@ import {
   type CountyAssumptionLike,
 } from '@/lib/crop-insurance'
 import type { HarvestPriceEstimate, CropInsurancePolicy, CropInsuranceSco, CropAssumption, FieldPlanting, CountyYieldAssumption } from '@/lib/types'
+import type { FieldCropAgg } from '@/lib/yields'
 
 // ---------------------------------------------------------------------------
 // Fixtures for the shared indemnity projection. Builders fill every field so the
@@ -817,21 +818,67 @@ describe('resolveHarvestPriceByCrop', () => {
 })
 
 describe('practiceActualYieldByCrop', () => {
-  it('irrigated = Σ irr bu / Σ irr ac; dryland = Σ dry bu / Σ dry ac', () => {
-    const m = practiceActualYieldByCrop([
-      mkPlanting({ irrigated_acres: 100, irrigated_bushels: 22000, dryland_acres: 50, dryland_bushels: 8000 }),
-      mkPlanting({ irrigated_acres: 100, irrigated_bushels: 20000 }),
-    ], 2026)
-    expect(m.get('corn|irrigated')).toBeCloseTo((22000 + 20000) / 200, 6) // 210
-    expect(m.get('corn|non_irrigated')).toBeCloseTo(8000 / 50, 6) // 160
+  const CROPS = [{ id: 'corn', name: 'Corn' }, { id: 'cot', name: 'Cotton' }]
+  // Field production as fieldCropAggregates gives it (dry bu per field × crop × year).
+  const aggOf = (bu: Record<string, number>) => new Map(Object.entries(bu).map(([k, v]) => [k, { dryBu: v, lastLoadDate: null } as FieldCropAgg]))
+  const split = (field: string, irrAc: number, irrBu: number, dryAc: number, dryBu: number) =>
+    mkPlanting({ field_id: field, irrigated_acres: irrAc, dryland_acres: dryAc, irrigated_bushels: irrBu, dryland_bushels: dryBu, yield_breakout_entered: true })
+
+  it('every field on the practice counts: pure fields whole, a mixed field by its split', () => {
+    // Irrigated: pivot 100 ac / 22,000 bu (split) + Home 100 ac / 20,000 bu (all irrigated) = 42,000 ÷ 200 = 210.
+    // Dryland: pivot corners 50 ac / 8,000 bu + Hill 300 ac / 39,000 bu (all dryland) = 47,000 ÷ 350 = 134.3.
+    const m = practiceActualYieldByCrop({
+      plantings: [
+        split('pivot', 100, 22000, 50, 8000),
+        mkPlanting({ field_id: 'home', irrigated_acres: 100 }),
+        mkPlanting({ field_id: 'hill', dryland_acres: 300 }),
+      ],
+      cropYear: 2026,
+      aggByKey: aggOf({ 'pivot|corn|2026': 30000, 'home|corn|2026': 20000, 'hill|corn|2026': 39000 }),
+      crops: CROPS,
+    })
+    expect(m.get('corn|irrigated')).toBeCloseTo(42000 / 200, 6)
+    expect(m.get('corn|non_irrigated')).toBeCloseTo(47000 / 350, 6)
   })
 
-  it('a cotton split (lint lbs) never stands in for the whole practice — cotton projections keep their default yields', () => {
-    const plantings = [
-      mkPlanting({ crop_id: 'cot', irrigated_acres: 205, irrigated_bushels: 300000, dryland_acres: 44.88, dryland_bushels: 61789 }),
-      mkPlanting({ irrigated_acres: 100, irrigated_bushels: 22000 }),
-    ]
-    const m = practiceActualYieldByCrop(plantings, 2026, [{ id: 'cot', name: 'Cotton' }, { id: 'corn', name: 'Corn' }])
+  it('one split field no longer stands in for the practice: the corners alone are not the dryland yield', () => {
+    // The old rule read only split fields → dryland = 8,000 ÷ 50 = 160 for all 350 dryland acres.
+    const m = practiceActualYieldByCrop({
+      plantings: [split('pivot', 100, 22000, 50, 8000), mkPlanting({ field_id: 'hill', dryland_acres: 300 })],
+      cropYear: 2026,
+      aggByKey: aggOf({ 'pivot|corn|2026': 30000, 'hill|corn|2026': 39000 }),
+      crops: CROPS,
+    })
+    expect(m.get('corn|non_irrigated')).toBeCloseTo(47000 / 350, 6)
+    expect(m.get('corn|non_irrigated')).not.toBeCloseTo(160, 1)
+  })
+
+  it('a mixed field with no split yet leaves both practices unknown (the projection falls back)', () => {
+    const m = practiceActualYieldByCrop({
+      plantings: [mkPlanting({ field_id: 'pivot', irrigated_acres: 100, dryland_acres: 50 }), mkPlanting({ field_id: 'home', irrigated_acres: 100 })],
+      cropYear: 2026,
+      aggByKey: aggOf({ 'pivot|corn|2026': 30000, 'home|corn|2026': 20000 }),
+      crops: CROPS,
+    })
+    expect(m.has('corn|irrigated')).toBe(false)
+    expect(m.has('corn|non_irrigated')).toBe(false)
+  })
+
+  it('no bushels on a practice yet: no actual (not 0)', () => {
+    const m = practiceActualYieldByCrop({ plantings: [mkPlanting({ field_id: 'hill', dryland_acres: 300 })], cropYear: 2026, aggByKey: new Map(), crops: CROPS })
+    expect(m.size).toBe(0)
+  })
+
+  it('cotton is left out — its lint is not in the grain load aggregates', () => {
+    const m = practiceActualYieldByCrop({
+      plantings: [
+        mkPlanting({ crop_id: 'cot', field_id: 'wp', irrigated_acres: 205, irrigated_bushels: 300000, dryland_acres: 44.88, dryland_bushels: 61789, yield_breakout_entered: true }),
+        mkPlanting({ field_id: 'home', irrigated_acres: 100 }),
+      ],
+      cropYear: 2026,
+      aggByKey: aggOf({ 'home|corn|2026': 22000 }),
+      crops: CROPS,
+    })
     expect(m.has('cot|irrigated')).toBe(false)
     expect(m.has('cot|non_irrigated')).toBe(false)
     expect(m.get('corn|irrigated')).toBeCloseTo(220, 6)
@@ -851,6 +898,7 @@ describe('projectInsuranceIndemnities', () => {
     cropYear: 2026,
     scos: [], ecos: [],
     actualYieldByCrop: new Map<string, number>(),
+    aggByKey: new Map<string, FieldCropAgg>(),
     harvestEstimates: [] as HarvestPriceEstimate[],
   }
 
@@ -875,21 +923,23 @@ describe('projectInsuranceIndemnities', () => {
     expect(irr.comp.totalIndemnity).toBeCloseTo(0, 2)
   })
 
-  it('priority: per-policy override > actual per-practice > expected breakout', () => {
+  it('priority: per-policy override > (harvest complete) this practice\'s actual > the crop\'s actual; expected until then', () => {
     const policies = [mkPolicy({ id: 'd', practice: 'non_irrigated' })]
-    const assumptions = [mkAssumption({ expected_yield_dry: 60 })]
+    // One all-dryland field, 100 ac, 9,000 bu off its loads = 90 bu/ac.
+    const dryField = { plantings: [mkPlanting({ field_id: 'hill', dryland_acres: 100 })], aggByKey: new Map([['hill|corn|2026', { dryBu: 9000, lastLoadDate: null } as FieldCropAgg]]) }
     // expected only → assumed 60 → 10,000
-    expect(projectInsuranceIndemnities({ ...common, policies, assumptions, plantings: [] })[0].assumedYield).toBeCloseTo(60, 6)
-    // actual per-practice (90) overrides expected → assumed 90
-    const withActual = projectInsuranceIndemnities({
-      ...common, policies, assumptions,
-      plantings: [mkPlanting({ dryland_acres: 100, dryland_bushels: 9000 })], // 90 bu/ac
-    })
+    expect(projectInsuranceIndemnities({ ...common, policies, assumptions: [mkAssumption({ expected_yield_dry: 60 })], plantings: [] })[0].assumedYield).toBeCloseTo(60, 6)
+    // mid-harvest the expected yield stands, even with bushels in
+    expect(projectInsuranceIndemnities({ ...common, ...dryField, policies, assumptions: [mkAssumption({ expected_yield_dry: 60 })] })[0].assumedYield).toBeCloseTo(60, 6)
+    // harvest complete: the practice's own actual (90) — ahead of the crop's blended actual (75)
+    const assumptions = [mkAssumption({ expected_yield_dry: 60, harvest_complete: true })]
+    const withActual = projectInsuranceIndemnities({ ...common, ...dryField, policies, assumptions, actualYieldByCrop: new Map([['corn', 75]]) })
     expect(withActual[0].assumedYield).toBeCloseTo(90, 6)
-    // per-policy override (50) wins over both
+    // no practice actual (nothing on the practice) → the crop's actual
+    expect(projectInsuranceIndemnities({ ...common, policies, assumptions, plantings: [], actualYieldByCrop: new Map([['corn', 75]]) })[0].assumedYield).toBeCloseTo(75, 6)
+    // per-policy override (50) wins over all of them
     const withOverride = projectInsuranceIndemnities({
-      ...common, policies, assumptions,
-      plantings: [mkPlanting({ dryland_acres: 100, dryland_bushels: 9000 })],
+      ...common, ...dryField, policies, assumptions,
       yieldOverrideByPolicy: new Map([['d', 50]]),
     })
     expect(withOverride[0].assumedYield).toBeCloseTo(50, 6)

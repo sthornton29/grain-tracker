@@ -115,14 +115,21 @@ describe('auditYieldBasis provenance', () => {
     practiceActualYield: null, expectedYieldIrr: 220, expectedYieldDry: 165, expectedYieldBlended: 190,
     harvestComplete: false, actualCropYield: null, meanAph: 172,
   }
-  it('actual practice breakout wins; then per-practice expected; then mean APH', () => {
-    expect(auditYieldBasis({ ...base, practiceActualYield: 158 })).toEqual({ value: 158, source: 'actual_practice' })
+  it('per-practice expected until harvest is complete (even with a practice actual); then mean APH', () => {
+    expect(auditYieldBasis({ ...base, practiceActualYield: 158 })).toEqual({ value: 165, source: 'expected_practice' })
     expect(auditYieldBasis(base)).toEqual({ value: 165, source: 'expected_practice' })
     expect(auditYieldBasis({ ...base, expectedYieldDry: null })).toEqual({ value: 190, source: 'expected_blended' })
     expect(auditYieldBasis({ ...base, expectedYieldDry: null, expectedYieldBlended: null })).toEqual({ value: 172, source: 'mean_aph' })
   })
-  it('harvest-complete prefers the crop actual over the expected', () => {
+  it('harvest-complete prefers this practice\'s actual, then the crop actual, over the expected', () => {
+    expect(auditYieldBasis({ ...base, harvestComplete: true, practiceActualYield: 158, actualCropYield: 151 })).toEqual({ value: 158, source: 'actual_practice' })
     expect(auditYieldBasis({ ...base, harvestComplete: true, actualCropYield: 151 })).toEqual({ value: 151, source: 'actual_crop' })
+    expect(auditYieldBasis({ ...base, harvestComplete: true, practiceActualYield: 158 })).toEqual({ value: 158, source: 'actual_practice' })
+  })
+  it('no expected yield: the practice actual, else the crop actual', () => {
+    const none = { ...base, expectedYieldIrr: null, expectedYieldDry: null, expectedYieldBlended: null }
+    expect(auditYieldBasis({ ...none, practiceActualYield: 158, actualCropYield: 151 })).toEqual({ value: 158, source: 'actual_practice' })
+    expect(auditYieldBasis({ ...none, actualCropYield: 151 })).toEqual({ value: 151, source: 'actual_crop' })
   })
 })
 

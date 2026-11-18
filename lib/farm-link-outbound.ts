@@ -835,7 +835,8 @@ export async function loadIncomePayload(supabase: SupabaseClient, org: string, y
   const asOf = new Date().toISOString()
   const cropById = new Map(production.crops.map((c) => [c.id, c]))
   const yearPlantings = production.plantings.filter((p) => p.season_year === year)
-  const effPlantings = withLoadBreakouts(yearPlantings, fieldCropAggregates(bundle.loads, bundle.splits, cropById, { cropYear: year, combineEntries: bundle.combineEntries }))
+  const aggByKey = fieldCropAggregates(bundle.loads, bundle.splits, cropById, { cropYear: year, combineEntries: bundle.combineEntries })
+  const effPlantings = withLoadBreakouts(yearPlantings, aggByKey)
   const actualYieldByCrop = actualYieldByCropFromLoads({ loads: bundle.loads, plantings: production.plantings, crops: production.crops, cropYear: year, combineEntries: bundle.combineEntries })
   const scoTrigger = resolveProgramYearConfig(year, bundle.programConfigs).scoTrigger
   const programYear = programYearFor(year)
@@ -848,7 +849,7 @@ export async function loadIncomePayload(supabase: SupabaseClient, org: string, y
     const scopedPolicies = scope.byEntity(bundle.policies)
     const projected = projectInsuranceIndemnities({
       cropYear: year, policies: scopedPolicies, scos: bundle.scos, ecos: bundle.ecos, staxes: bundle.staxes, mcos: bundle.mcos,
-      assumptions: production.assumptions, plantings: effPlantings, actualYieldByCrop, harvestEstimates: bundle.estimates,
+      assumptions: production.assumptions, plantings: effPlantings, aggByKey, actualYieldByCrop, harvestEstimates: bundle.estimates,
       crops: production.crops, scoTrigger, countyAssumptions: bundle.countyAssumptions,
     })
     const insuranceByCrop = new Map<string, InsuranceProceeds>()
@@ -1255,14 +1256,15 @@ export async function loadInsurancePayload(supabase: SupabaseClient, org: string
   const asOf = new Date().toISOString()
   const cropById = new Map(production.crops.map((c) => [c.id, c]))
   const yearPlantings = production.plantings.filter((p) => p.season_year === year)
-  const effPlantings = withLoadBreakouts(yearPlantings, fieldCropAggregates(bundle.loads, bundle.splits, cropById, { cropYear: year, combineEntries: bundle.combineEntries }))
+  const aggByKey = fieldCropAggregates(bundle.loads, bundle.splits, cropById, { cropYear: year, combineEntries: bundle.combineEntries })
+  const effPlantings = withLoadBreakouts(yearPlantings, aggByKey)
   const actualYieldByCrop = actualYieldByCropFromLoads({ loads: bundle.loads, plantings: production.plantings, crops: production.crops, cropYear: year, combineEntries: bundle.combineEntries })
   const scoTrigger = resolveProgramYearConfig(year, bundle.programConfigs).scoTrigger
   // Unscoped: a policy attributes to its OWN entity, so one pass covers every
   // row (the attribution the income pull documents as `by_entity`).
   const projected = projectInsuranceIndemnities({
     cropYear: year, policies: bundle.policies, scos: bundle.scos, ecos: bundle.ecos, staxes: bundle.staxes, mcos: bundle.mcos,
-    assumptions: production.assumptions, plantings: effPlantings, actualYieldByCrop, harvestEstimates: bundle.estimates,
+    assumptions: production.assumptions, plantings: effPlantings, aggByKey, actualYieldByCrop, harvestEstimates: bundle.estimates,
     crops: production.crops, scoTrigger, countyAssumptions: bundle.countyAssumptions,
   })
   // A row's updated_at is the newest change across the policy and its riders.

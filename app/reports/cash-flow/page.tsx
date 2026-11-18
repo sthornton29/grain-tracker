@@ -691,14 +691,12 @@ export default function CashFlowPage() {
       // (same seam as the Claims Monitor) so the shared projection's
       // per-practice yields agree between the two pages whichever path — manual
       // allocation or fully practice-tagged loads — produced the split.
-      const effPlantings = withLoadBreakouts(
-        plantings,
-        fieldCropAggregates(loads, splits, cropById, { cropYear: yr, combineEntries }),
-      )
+      const aggByKey = fieldCropAggregates(loads, splits, cropById, { cropYear: yr, combineEntries })
+      const effPlantings = withLoadBreakouts(plantings, aggByKey)
       const projected = projectInsuranceIndemnities({
         cropYear: yr,
         policies: yrPolicies,
-        scos, ecos, assumptions: effAssumptions, plantings: effPlantings,
+        scos, ecos, assumptions: effAssumptions, plantings: effPlantings, aggByKey,
         actualYieldByCrop: actualYieldByCropFromLoads({ loads, plantings, crops, cropYear: yr, combineEntries }),
         harvestEstimates,
         liveHarvestByCrop: liveHarvestByYear.get(yr),

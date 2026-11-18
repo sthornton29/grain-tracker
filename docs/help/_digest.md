@@ -1,6 +1,6 @@
 # Turnrow capabilities digest
 
-Generated 2026-11-18 · version 0.1.0 · build 889819f. Compiled from docs/help — regenerate with `npm run help:build`.
+Generated 2026-11-18 · version 0.1.0 · build 81294cf. Compiled from docs/help — regenerate with `npm run help:build`.
 
 # What Turnrow does NOT do
 
@@ -1240,7 +1240,7 @@ The Claims Monitor estimates what each of your crop insurance policies would pay
 ## How the numbers work
 
 - **Everything here is an estimate.** The banner at the top says so: figures are based on current yield assumptions and futures prices, and final amounts are determined by RMA after harvest.
-- **Yields**: once a practice is harvested, the actual irrigated or dryland yield is used. Before that, your expected yield breakout from the Marketing page fills in, so irrigated and dryland can differ even pre-harvest.
+- **Yields**: until you mark a crop's harvest complete (Marketing → Edit Assumptions), your expected yield breakout from the Marketing page fills in, so irrigated and dryland can differ even pre-harvest. Once it's complete, each practice uses its own actual yield — every irrigated (or dryland) field's bushels over its acres, with a field that is part irrigated and part dryland counted by its split from the Yields page. If one of those mixed fields hasn't been split yet, both practices use the crop's overall actual yield until it is. Cotton keeps its expected yield here.
 - **Harvest price**: a colored chip beside every price says exactly where it came from — the same chips as the Price Discovery table in Settings — and a small ↻ pulls the latest from RMA for that crop without touching anything else. Overrides live in Settings (the "Price details & overrides" link); the label beside the price says exactly where it came from, and it upgrades as the season progresses — a futures estimate (est.) before the discovery window opens, RMA's own running average once the window is live (RMA discovery, with the day of the window), and (RMA final) the moment RMA publishes. A price you entered by hand shows (final); if RMA later publishes a different final, a notice shows both numbers and lets you keep yours — nothing is replaced silently.
 - **County pieces**: SCO, ECO, STAX, MCO, ARP, and AYP pay based on estimated county results, not your farm's. ARP and AYP rows are labeled "county-triggered — farm yield not used" because your own yield genuinely does not matter to them.
 - Indemnities are shown net of premium, so the number is what you'd actually expect to collect.
