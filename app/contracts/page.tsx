@@ -474,7 +474,7 @@ export default async function ContractsPage({
         .range(f, t)),
       supabase.from('crop_assumptions').select('*').eq('crop_year', cropYear),
     ])
-    const scope = buildEntityScope({ entityId, farms, fields, entities })
+    const scope = buildEntityScope({ entityId, farms, fields, entities, agentView: 'book' })
     const scoped = scope.plantings(plQ.data ?? [])
     const cropMeta = new Map(crops.map((c) => [c.id, { harvest_category: c.harvest_category, double_crop: c.double_crop ?? false }]))
     const doubleCropIds = buildDoubleCropSet(scoped, cropMeta)

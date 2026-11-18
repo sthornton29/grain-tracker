@@ -161,7 +161,9 @@ async function loadMarketingBundle(
     allRows<CombineRow>((f, t) =>
       supabase.from('combine_yield_entries').select(COMBINE_SELECT).eq('crop_year', cropYear).order('id').range(f, t)),
   ])
-  const scope = buildEntityScope({ entityId, farms: bits.farms, fields: bits.fields, entities: bits.entities, grantedEntityIds: ctx.grantedEntityIds })
+  // agentView 'book': the same reading as the Marketing screen — a marketing
+  // agent asked about by name answers with its whole book.
+  const scope = buildEntityScope({ entityId, farms: bits.farms, fields: bits.fields, entities: bits.entities, grantedEntityIds: ctx.grantedEntityIds, agentView: 'book' })
   const scopedPlantings = scope.plantings(plantings)
   const attribution = scope.attribution({ plantings, crops })
   const cropById = new Map(crops.map((c) => [c.id, c]))

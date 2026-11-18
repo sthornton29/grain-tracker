@@ -175,7 +175,7 @@ export default function SeasonSummaryPage() {
   // Shared entity scoping — acreage/production narrow to the entity's fields;
   // the season's assumptions and shared rules are untouched.
   const scope = useMemo(
-    () => buildEntityScope({ entityId, farms, fields, entities, grantedEntityIds: viewer.grantedIds }),
+    () => buildEntityScope({ entityId, farms, fields, entities, grantedEntityIds: viewer.grantedIds, agentView: 'book' }),
     [entityId, farms, fields, entities, viewer.grantedIds],
   )
   const entityName = entityId

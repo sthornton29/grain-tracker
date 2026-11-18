@@ -177,7 +177,7 @@ export default function CashFlowPage() {
         if (!physical.hasData) { setCottonEvents([]); return }
         // Shared attribution (same rule as the other reports): own-name rows
         // whole, marketing-agent/null rows flow down at the cotton acre share.
-        const { own, flow, flowShare, hasData } = buildEntityScope({ entityId, farms, fields, entities, grantedEntityIds: viewer.grantedIds })
+        const { own, flow, flowShare, hasData } = buildEntityScope({ entityId, farms, fields, entities, grantedEntityIds: viewer.grantedIds, agentView: 'book' })
           .attribution({ plantings, crops })
           .cottonPartition(physical.inputs)
         if (!hasData) { setCottonEvents([]); return }
@@ -307,7 +307,7 @@ export default function CashFlowPage() {
   // through the shared attribution (entity-keyed → whole; operation-level →
   // the entity's acre share of the crop, so its sales don't vanish).
   const scope = useMemo(
-    () => buildEntityScope({ entityId, farms, fields, entities, grantedEntityIds: viewer.grantedIds }),
+    () => buildEntityScope({ entityId, farms, fields, entities, grantedEntityIds: viewer.grantedIds, agentView: 'book' }),
     [entityId, farms, fields, entities, viewer.grantedIds],
   )
   const entityName = entityId
@@ -641,7 +641,7 @@ export default function CashFlowPage() {
     const programYears = cropYear !== '' ? [programYearFor(cropYear)] : Array.from(new Set([...elections.map((e) => e.crop_year), ...[...receivedMap.values()].map((r) => r.programYear)]))
     for (const yr of programYears) {
       if (!cropId) {
-        const yearScope = buildEntityScope({ entityId, farms: farmsAsPayees(farms, yr, payeeIdx), fields, entities, grantedEntityIds: viewer.grantedIds })
+        const yearScope = buildEntityScope({ entityId, farms: farmsAsPayees(farms, yr, payeeIdx), fields, entities, grantedEntityIds: viewer.grantedIds, agentView: 'book' })
         const projected = projectPayments({ cropYear: yr, baseAcres, commodities, elections, priceData: arcPriceData, payments: arcPayments, farms })
         const rows = mergeProjectedWithReceived({ programYear: yr, projected, received: receivedMap, sequesterPct: resolveProgramYearConfig(yr, programConfigs).sequestrationPct })
         const m = monthKey(new Date(expectedArcPlcDate(yr) + 'T00:00:00'))

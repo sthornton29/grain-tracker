@@ -16,7 +16,7 @@ import type { CottonPhysicalSummary } from '@/lib/cotton-sales'
 import { fetchSeedContracts, type SeedContractData } from '@/lib/seed-contracts-fetch'
 import { buildSeedCommitments } from '@/lib/seed-contracts'
 import type { SeedMarketingPosition } from '@/lib/seed-contracts'
-import { buildEntityScope } from '@/lib/entity-scope'
+import { buildEntityScope, isAgentBook } from '@/lib/entity-scope'
 import EntityFilter from '@/components/entity-filter'
 import CropYearSalesStatus from '@/components/crop-year-sales-status'
 import { buildMarketingExport } from '@/lib/marketing-export'
@@ -323,7 +323,8 @@ export default function MarketingPage() {
   // Assumed acres (081) stand in for a crop with no plantings this year — but
   // only for the whole operation: there is no field to attribute them to, so
   // an entity filter (or a viewer's grant scope) keeps the planted-acre rule.
-  const assumedAcresOn = entityId === '' && viewer.grantedIds == null
+  // A marketing agent's book IS the whole operation, so it keeps them too.
+  const assumedAcresOn = (entityId === '' || isAgentBook({ entityId, entities, agentView: 'book' })) && viewer.grantedIds == null
 
   // --- Reference contracts (expiry-aware, override-aware) ------------------
   // One resolver decides the futures contract unpriced bushels are valued
@@ -411,7 +412,7 @@ export default function MarketingPage() {
   // their entity, operation-level (null-entity) rows pro-rate by the entity's
   // acre share of the crop, so a filtered entity keeps its sales.
   const scope = useMemo(
-    () => buildEntityScope({ entityId, farms, fields, entities, grantedEntityIds: viewer.grantedIds }),
+    () => buildEntityScope({ entityId, farms, fields, entities, grantedEntityIds: viewer.grantedIds, agentView: 'book' }),
     [entityId, farms, fields, entities, viewer.grantedIds],
   )
   const entityName = entityId

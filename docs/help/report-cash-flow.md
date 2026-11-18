@@ -15,7 +15,7 @@ The forecast opens on the current crop year; pick another year, a crop, a buyer,
 ## What the controls do
 
 - **Crop year** — frames the whole forecast, including which program year's ARC/PLC belongs in it. "All crop years" is available for a whole-book view but is never the default.
-- **Entity filter** — narrows fields, production, and policies to the entity. Contracts held by your marketing agent, or with no entity, count toward each entity by its share of the crop's planted acres.
+- **Entity filter** — narrows fields, production, and policies to the entity. Contracts held by your marketing agent, or with no entity, count toward each entity by its share of the crop's planted acres. Pick the **marketing agent** itself and you see its whole book: everything it has sold and hedged for the operation, against the whole operation's production.
 - **Tap any number to see where it comes from.** Every amount in the monthly table, the summary tiles, and the safety-net tiles opens a list of the lines behind it: the settlements (with buyer, contract, loads, and bushels) behind Received; the contracts with delivered-but-unsettled loads behind Outstanding; each contract's undelivered bushels, price, and how the delivery window spreads it across months behind Projected; the farm-and-commodity rows behind ARC/PLC; each policy behind Crop Insurance; each payment behind Other USDA; and the cotton and seed lines behind their columns. A month's total lists every kind together. Each line links to its record — the settlement, the contract, the report it came from — and the list totals to the number you tapped.
 - **Export Excel / PDF / Print** — the monthly matrix, safety net, and contract detail together.
 

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildEntityScope } from '@/lib/entity-scope'
+import { buildEntityScope, isAgentBook } from '@/lib/entity-scope'
 import { segmentAcresByCrop, expectedProductionFromBreakout } from '@/lib/marketing'
 import type { CottonPhysicalInputs } from '@/lib/cotton-sales'
 import type { CropAssumption } from '@/lib/types'
@@ -233,6 +233,83 @@ describe('buildEntityScope', () => {
       const futs = [{ id: 'f', entity_id: 'TRW', commodity: 'Corn', crop_year: 2026, num_contracts: 2, realized_pnl: 5000, commission: 100 }]
       expect(attr('E1').futures(futs)[0].realized_pnl).toBeCloseTo(3000, 6)
       expect(attr('E2').futures(futs)[0].realized_pnl).toBeCloseTo(2000, 6)
+    })
+
+    describe("agentView 'book' — the report screens read a marketing agent as its whole book", () => {
+      const entities = [
+        { id: 'E1', entity_role: 'farming' }, { id: 'E2', entity_role: 'farming' },
+        { id: 'TRW', entity_role: 'marketing_agent' }, { id: 'AG2', entity_role: 'marketing_agent' },
+      ]
+      const book = (entityId: string, grantedEntityIds?: string[]) =>
+        buildEntityScope({ entityId, farms, fields, entities, agentView: 'book', grantedEntityIds })
+      const rows = [
+        { id: 'agent', entity_id: 'TRW', crop_id: 'corn', crop_year: 2026, contracted_bushels: 30000 },
+        { id: 'op', entity_id: null, crop_id: 'corn', crop_year: 2026, contracted_bushels: 4000 },
+        { id: 'future', entity_id: 'TRW', crop_id: 'corn', crop_year: 2027, contracted_bushels: 9000 }, // no 2027 acres yet
+        { id: 'own', entity_id: 'E2', crop_id: 'corn', crop_year: 2026, contracted_bushels: 7000 },
+        { id: 'other-agent', entity_id: 'AG2', crop_id: 'corn', crop_year: 2026, contracted_bushels: 1000 },
+      ]
+
+      it('its own rows and the operation-level rows count WHOLE — even a crop year with no acres yet', () => {
+        const out = book('TRW').attribution({ plantings, crops }).contracts(rows)
+        expect(out).toEqual(rows.filter((r) => ['agent', 'op', 'future'].includes(r.id)))
+      })
+
+      it("a farming entity's own-name rows and another agent's rows are not in the book", () => {
+        const ids = book('TRW').attribution({ plantings, crops }).contracts(rows).map((r) => r.id)
+        expect(ids).not.toContain('own')
+        expect(ids).not.toContain('other-agent')
+      })
+
+      it('production is the whole operation: inactive, every production filter a pass-through', () => {
+        const s = book('TRW')
+        expect(s.active).toBe(false)
+        expect(s.agentBookOf).toBe('TRW')
+        expect(s.fieldIds).toBeNull()
+        expect(s.plantings(plantings)).toEqual(plantings)
+        const a = s.attribution({ plantings, crops })
+        expect(a.shareForCrop('corn', 2026)).toBe(1)
+        const futs = [
+          { id: 'f', entity_id: 'TRW', commodity: 'Corn', crop_year: 2026, num_contracts: 2, realized_pnl: 5000, commission: 100 },
+          { id: 'g', entity_id: 'E1', commodity: 'Corn', crop_year: 2026, num_contracts: 1, realized_pnl: 10, commission: 5 },
+        ]
+        expect(a.futures(futs)).toEqual([futs[0]])
+      })
+
+      it('physical cotton: the agent-held and null rows whole, own-name rows out', () => {
+        const inputs = {
+          cropYear: 2026, bales: [], gradesByBale: new Map(), dispositions: [],
+          contracts: [], poolPayments: [], loans: [], loanBales: [],
+          ldps: [{ id: 'ldp1', entity_id: 'TRW', total_payment: 1000 }, { id: 'ldp2', entity_id: null, total_payment: 50 }],
+          fees: [{ id: 'fee1', entity_id: 'E2', fee_type: 'checkoff', loan_id: null, contract_id: null, amount_total: 200, status: 'actual' }],
+        } as unknown as CottonPhysicalInputs
+        const cotton = [{ field_id: 'A', crop_id: 'cotton', season_year: 2026, planted_acres: 300 }]
+        const sum = book('TRW').attribution({ plantings: cotton, crops: [{ id: 'cotton', name: 'Cotton' }] }).cottonSummary(inputs)!
+        expect(sum.programDollars).toBeCloseTo(1050, 2)
+        expect(sum.feeDollars).toBe(0)
+      })
+
+      it("farming entities, 'share' (the default — the per-entity engines) and viewers are unchanged", () => {
+        const share = (entityId: string) => buildEntityScope({ entityId, farms, fields, entities })
+        // A farming entity reads the same in either view.
+        expect(book('E1').attribution({ plantings, crops }).contracts(rows))
+          .toEqual(share('E1').attribution({ plantings, crops }).contracts(rows))
+        // The engines' default keeps the agent at its own farmed share (none here).
+        expect(share('TRW').attribution({ plantings, crops }).contracts(rows)).toEqual([])
+        expect(share('TRW').agentBookOf).toBeNull()
+        // A viewer granted the agent never gets the book (it reaches outside the grants).
+        const v = book('TRW', ['TRW'])
+        expect(v.agentBookOf).toBeNull()
+        expect(v.active).toBe(true)
+      })
+
+      it('isAgentBook agrees with the scope', () => {
+        expect(isAgentBook({ entityId: 'TRW', entities, agentView: 'book' })).toBe(true)
+        expect(isAgentBook({ entityId: 'TRW', entities })).toBe(false)
+        expect(isAgentBook({ entityId: 'E1', entities, agentView: 'book' })).toBe(false)
+        expect(isAgentBook({ entityId: '', entities, agentView: 'book' })).toBe(false)
+        expect(isAgentBook({ entityId: 'TRW', entities, agentView: 'book', grantedEntityIds: [] })).toBe(false)
+      })
     })
 
     it('null-entity futures/options scale contracts, P&L, and commission by the commodity’s acre share', () => {

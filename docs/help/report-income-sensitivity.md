@@ -18,7 +18,7 @@ The report opens on the current crop year (or the year you last picked); scroll 
 - **Price and yield axis controls** — set the center, step, and number of steps for each axis of each crop; leave them blank for automatic values centered on your current assumptions — the assumed futures price from your marketing assumptions (falling back to today's price, then your policies' projected price) and your expected yield. An entry that does not parse reverts to the previous value.
 - **Include government payments** — adds the payments expected to arrive during the crop year (the prior program year's ARC/PLC paid that fall, plus other USDA payments) as one flat dollars-per-acre amount, identical for every crop and constant across cells.
 - **County yield toggle** — see below.
-- **Entity filter** — narrows acres, positions, and policies; agent-held or whole-operation contracts count toward each entity by its share of the crop's planted acres.
+- **Entity filter** — narrows acres, positions, and policies; agent-held or whole-operation contracts count toward each entity by its share of the crop's planted acres. Pick the **marketing agent** itself and you see its whole book: everything it has sold and hedged for the operation, against the whole operation's production.
 - **Export Excel / PDF / Print** — the tables with the price axis as the first column and your active toggles noted.
 
 ## How the numbers work

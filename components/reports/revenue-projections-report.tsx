@@ -224,7 +224,7 @@ export default function RevenueProjectionsReport({ onPayloadChange, headerAction
   // the reconciliation identity (RevProj profit − Marketing profit = insurance
   // + government) survives an entity filter.
   const scope = useMemo(
-    () => buildEntityScope({ entityId, farms, fields, entities, grantedEntityIds: viewer.grantedIds }),
+    () => buildEntityScope({ entityId, farms, fields, entities, grantedEntityIds: viewer.grantedIds, agentView: 'book' }),
     [entityId, farms, fields, entities, viewer.grantedIds],
   )
   const entityName = entityId
@@ -592,7 +592,7 @@ export default function RevenueProjectionsReport({ onPayloadChange, headerAction
     // 0099: the entity filter follows the PROGRAM year's payee, and a paid
     // farm × commodity counts its actual once (lib/fsa-actuals).
     const payeeIdx = indexPayees(govActuals.payees)
-    const yearScope = buildEntityScope({ entityId, farms: farmsAsPayees(farms, programYear, payeeIdx), fields, entities, grantedEntityIds: viewer.grantedIds })
+    const yearScope = buildEntityScope({ entityId, farms: farmsAsPayees(farms, programYear, payeeIdx), fields, entities, grantedEntityIds: viewer.grantedIds, agentView: 'book' })
     const projected = projectPayments({ cropYear: programYear, baseAcres, commodities, elections, priceData: effPrice, payments: arcPayments, farms })
     const rows = mergeProjectedWithReceived({ programYear, projected, received: receivedArcPlc({ lines: govActuals.lines, cropAmounts: govActuals.cropAmounts }), sequesterPct: DEFAULT_SEQUESTRATION_PCT })
       .filter((r) => yearScope.farmInEntity(r.farmId))

@@ -34,6 +34,19 @@
 // With entityId === '' (All entities) every filter is the identity function, so
 // the unfiltered numbers are structurally guaranteed to match today's.
 //
+// A MARKETING AGENT SELECTED ON A REPORT SCREEN reads as its BOOK (agentView
+// 'book', 2026-11-17 — Stuart: "Turnrow is the marketing agent for itself, Two
+// Seasons, and View Celeste"; choosing it must show all the marketing it did):
+// the operation's production, unnarrowed, against every marketing row the
+// agent holds plus the operation-level (null-entity) rows, all WHOLE; a farming
+// entity's own-name rows and another agent's rows drop. Production-side
+// methods are pass-throughs and `active` is false, so the screens read it
+// exactly like All entities apart from the marketing rows. The per-entity
+// ENGINES (Farm link outbound, the partner API, lib/entity-marketing) keep the
+// default 'share' — there the entities must sum to the operation, so the agent
+// keeps only its own farmed acres' share. Viewers (grants) always get 'share':
+// the book would reach production outside their grants.
+//
 // VIEWER GRANTS (052): pass grantedEntityIds (the viewer's user_entity_access
 // set) and the scope's universe shrinks to those entities. '' then means "all
 // MY entities combined" (the grants' union — still active filtering, never the
@@ -54,8 +67,10 @@ import { buildCottonPhysicalSummary, type CottonPhysicalInputs, type CottonPhysi
 //     the crop's (or hedge commodity's) planted acres for that crop year:
 //     prices per bushel are untouched, so the entity view shows the same avg
 //     price / buildup as the all-entities report, and the per-entity bushels
-//     and realized hedge P&L sum back to the operation total. (Filtering to
-//     the agent itself shows only its own farmed acres' share — normally none:
+//     and realized hedge P&L sum back to the operation total. (Report screens
+//     pass agentView 'book' and read the agent's whole book; in the default
+//     'share' view the engines use, filtering to the agent itself shows only
+//     its own farmed acres' share — normally none:
 //     the income has been shifted down.)
 // With no active filter every method is an exact pass-through.
 export type EntityAttribution = {
@@ -154,8 +169,14 @@ function mergeCottonSummaries(a: CottonPhysicalSummary, b: CottonPhysicalSummary
 export type EntityScope = {
   entityId: string
   /** False for '' (All entities) — every method is then a pass-through.
-   *  With viewer grants the scope is ALWAYS active ('' = union of grants). */
+   *  With viewer grants the scope is ALWAYS active ('' = union of grants).
+   *  Also false for a marketing agent's BOOK (agentBookOf set): production
+   *  is the whole operation; only the marketing rows narrow. */
   active: boolean
+  /** The marketing agent whose book this scope reads (agentView 'book'), else
+   *  null. Its rows and the null-entity rows count whole in attribution();
+   *  every other entity-keyed marketing row drops. */
+  agentBookOf: string | null
   /** The entity ids this scope actually selects; null when inactive.
    *  A single id for a normal filter, the whole grant set for a viewer's
    *  "all my entities". */
@@ -190,6 +211,22 @@ export type EntityScope = {
   ginReceipts<T extends { entity_id: string | null; farm_id: string | null; field_id: string | null }>(rows: readonly T[]): T[]
 }
 
+/** True when this selection reads as a marketing agent's BOOK (see the
+ *  header): agentView 'book', an owner (no grants), and the selected entity
+ *  is a marketing agent. Exported for screens that decide "whole operation?"
+ *  before their scope exists (the Marketing page's assumed-acres switch). */
+export function isAgentBook(args: {
+  entityId: string
+  entities: ReadonlyArray<{ id: string; entity_role?: string | null }>
+  grantedEntityIds?: ReadonlyArray<string> | ReadonlySet<string> | null
+  agentView?: 'book' | 'share'
+}): boolean {
+  return args.agentView === 'book'
+    && args.grantedEntityIds == null
+    && args.entityId !== ''
+    && args.entities.some((e) => e.id === args.entityId && e.entity_role === 'marketing_agent')
+}
+
 export function buildEntityScope(args: {
   entityId: string
   farms: ReadonlyArray<{ id: string; entity_id: string | null }>
@@ -201,6 +238,9 @@ export function buildEntityScope(args: {
   /** The viewer's granted entities (user_entity_access, 052). When present
    *  and non-empty, the scope can never reach outside them — see the header. */
   grantedEntityIds?: ReadonlyArray<string> | ReadonlySet<string> | null
+  /** How a selected marketing agent reads — see the header. 'book' for the
+   *  report screens; default 'share' (the per-entity engines). */
+  agentView?: 'book' | 'share'
 }): EntityScope {
   const { entityId, farms, fields = [], entities = [] } = args
   // FAIL CLOSED: any non-null grant list — even an empty one — means "this
@@ -208,14 +248,18 @@ export function buildEntityScope(args: {
   // with zero grants sees zero rows), never everything. Only null/undefined
   // (owners) leaves the scope unrestricted.
   const grants = args.grantedEntityIds != null ? new Set(args.grantedEntityIds) : null
+  const agentIds = new Set(entities.filter((e) => e.entity_role === 'marketing_agent').map((e) => e.id))
+  const agentBookOf = isAgentBook({ entityId, entities, grantedEntityIds: args.grantedEntityIds, agentView: args.agentView }) ? entityId : null
   // The entity ids this scope selects: a granted (or plain, for owners)
   // single entity, or — for a viewer with no/foreign selection — the union
-  // of the grants. Null = no filtering at all (owners' "All entities").
-  const selected: ReadonlySet<string> | null = grants
-    ? (entityId !== '' && grants.has(entityId) ? new Set([entityId]) : grants)
-    : (entityId !== '' ? new Set([entityId]) : null)
+  // of the grants. Null = no filtering at all (owners' "All entities", and an
+  // agent's book, whose marketing rows narrow through agentBookOf instead).
+  const selected: ReadonlySet<string> | null = agentBookOf
+    ? null
+    : grants
+      ? (entityId !== '' && grants.has(entityId) ? new Set([entityId]) : grants)
+      : (entityId !== '' ? new Set([entityId]) : null)
   const active = selected != null
-  const agentIds = new Set(entities.filter((e) => e.entity_role === 'marketing_agent').map((e) => e.id))
 
   const farmEntity = new Map(farms.map((f) => [f.id, f.entity_id]))
   const farmIds = active
@@ -263,10 +307,14 @@ export function buildEntityScope(args: {
       shareOf(mineByCrop, totalByCrop, cropId != null && cropYear != null ? `${cropId}|${cropYear}` : null)
     const shareForCommodity = (commodity: string | null, cropYear: number | null) =>
       shareOf(mineByCommodity, totalByCommodity, commodity != null && cropYear != null ? `${commodity}|${cropYear}` : null)
+    // An agent's book: its own rows and the operation-level rows whole,
+    // everything else (own-name rows, another agent's) out.
+    const inBook = (rowEntity: string | null) => rowEntity == null || rowEntity === agentBookOf
     // Farming-entity-keyed rows (own-name marketing): whole for a selected
     // entity, gone for another's. Marketing-agent-held and null-entity rows
     // market FOR the operation: the pro-rata acre share.
     const factor = (rowEntity: string | null, share: () => number): number => {
+      if (agentBookOf) return inBook(rowEntity) ? 1 : 0
       if (!active) return 1
       if (rowEntity == null || agentIds.has(rowEntity)) return share()
       return selected!.has(rowEntity) ? 1 : 0
@@ -290,7 +338,9 @@ export function buildEntityScope(args: {
       }
       const countRows = (i: CottonPhysicalInputs) => i.contracts.length + i.loans.length + i.ldps.length + i.fees.length
       if (!active) {
-        const flow = sub(inputs.contracts, inputs.loans, inputs.ldps, inputs.fees)
+        const book = <T extends { entity_id: string | null }>(rows: readonly T[]): T[] =>
+          (agentBookOf ? rows.filter((r) => inBook(r.entity_id)) : [...rows])
+        const flow = sub(book(inputs.contracts), book(inputs.loans), book(inputs.ldps), book(inputs.fees))
         return { own: sub([], [], [], []), flow, flowShare: 1, hasData: countRows(flow) > 0 }
       }
       const split = <T extends { entity_id: string | null }>(rows: readonly T[]) => {
@@ -330,7 +380,7 @@ export function buildEntityScope(args: {
       cottonPartition,
       cottonSummary,
       contracts: (rows) => {
-        if (!active) return [...rows]
+        if (!active && !agentBookOf) return [...rows]
         const out: typeof rows[number][] = []
         for (const c of rows) {
           const f = factor(c.entity_id, () => shareForCrop(c.crop_id, c.crop_year))
@@ -340,7 +390,7 @@ export function buildEntityScope(args: {
         return out
       },
       futures: (rows) => {
-        if (!active) return [...rows]
+        if (!active && !agentBookOf) return [...rows]
         const out: typeof rows[number][] = []
         for (const p of rows) {
           const f = factor(p.entity_id, () => shareForCommodity(p.commodity, p.crop_year))
@@ -355,7 +405,7 @@ export function buildEntityScope(args: {
         return out
       },
       options: (rows) => {
-        if (!active) return [...rows]
+        if (!active && !agentBookOf) return [...rows]
         const out: typeof rows[number][] = []
         for (const o of rows) {
           const f = factor(o.entity_id, () => shareForCommodity(o.commodity, o.crop_year))
@@ -377,6 +427,7 @@ export function buildEntityScope(args: {
   return {
     entityId,
     active,
+    agentBookOf,
     selectedEntityIds: selected,
     fieldIds,
     farmIds,

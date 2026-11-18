@@ -15,7 +15,7 @@ The report opens on the current crop year (or the year you last picked); narrow 
 ## What the controls do
 
 - **Crop year** — the year everything reports on.
-- **Entity filter** — narrows acres, production, policies, and payments to that entity. Contracts and hedges held by your marketing agent, or entered with no entity, are whole-operation marketing: they count toward each entity by its share of the crop's planted acres, while an entity's own-name contracts stay wholly its own.
+- **Entity filter** — narrows acres, production, policies, and payments to that entity. Contracts and hedges held by your marketing agent, or entered with no entity, are whole-operation marketing: they count toward each entity by its share of the crop's planted acres, while an entity's own-name contracts stay wholly its own. Pick the **marketing agent** itself and you see its whole book: everything it has sold and hedged for the operation, against the whole operation's production.
 - **Export Excel / PDF / Print** — the full summary with the filter line included.
 
 ## How the numbers work

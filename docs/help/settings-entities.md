@@ -19,7 +19,7 @@ Entities are the companies and people that farm — an LLC, a partnership, you a
 
 - **Counties** — the counties this entity farms in. Farms and bin sites under the entity choose from these, so add every county you have ground in.
 - **Payment-limit persons** — the eligible persons for FSA payment limits. The entity's total ARC/PLC cap is this number times the program year's per-person limit. Set it once; change it if the entity's structure changes.
-- **Role** — a **farming entity** (the usual) or a **marketing agent**: one entity that holds the contracts and hedge account on behalf of the whole operation. In entity-filtered reports the agent's marketing flows down to each farming entity by its share of the crop's planted acres, so income lands where the grain was grown.
+- **Role** — a **farming entity** (the usual) or a **marketing agent**: one entity that holds the contracts and hedge account on behalf of the whole operation. In entity-filtered reports the agent's marketing flows down to each farming entity by its share of the crop's planted acres, so income lands where the grain was grown. Picking the agent itself in a report shows its whole book.
 
 ## Common questions
 

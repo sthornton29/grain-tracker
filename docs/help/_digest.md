@@ -1,6 +1,6 @@
 # Turnrow capabilities digest
 
-Generated 2026-11-17 · version 0.1.0 · build 1ffde37. Compiled from docs/help — regenerate with `npm run help:build`.
+Generated 2026-11-18 · version 0.1.0 · build 61018e0. Compiled from docs/help — regenerate with `npm run help:build`.
 
 # What Turnrow does NOT do
 
@@ -765,7 +765,7 @@ The forecast opens on the current crop year; pick another year, a crop, a buyer,
 ## What the controls do
 
 - **Crop year** — frames the whole forecast, including which program year's ARC/PLC belongs in it. "All crop years" is available for a whole-book view but is never the default.
-- **Entity filter** — narrows fields, production, and policies to the entity. Contracts held by your marketing agent, or with no entity, count toward each entity by its share of the crop's planted acres.
+- **Entity filter** — narrows fields, production, and policies to the entity. Contracts held by your marketing agent, or with no entity, count toward each entity by its share of the crop's planted acres. Pick the **marketing agent** itself and you see its whole book: everything it has sold and hedged for the operation, against the whole operation's production.
 - **Tap any number to see where it comes from.** Every amount in the monthly table, the summary tiles, and the safety-net tiles opens a list of the lines behind it: the settlements (with buyer, contract, loads, and bushels) behind Received; the contracts with delivered-but-unsettled loads behind Outstanding; each contract's undelivered bushels, price, and how the delivery window spreads it across months behind Projected; the farm-and-commodity rows behind ARC/PLC; each policy behind Crop Insurance; each payment behind Other USDA; and the cotton and seed lines behind their columns. A month's total lists every kind together. Each line links to its record — the settlement, the contract, the report it came from — and the list totals to the number you tapped.
 - **Export Excel / PDF / Print** — the monthly matrix, safety net, and contract detail together.
 
@@ -1197,7 +1197,7 @@ The report opens on the current crop year (or the year you last picked); scroll 
 - **Price and yield axis controls** — set the center, step, and number of steps for each axis of each crop; leave them blank for automatic values centered on your current assumptions — the assumed futures price from your marketing assumptions (falling back to today's price, then your policies' projected price) and your expected yield. An entry that does not parse reverts to the previous value.
 - **Include government payments** — adds the payments expected to arrive during the crop year (the prior program year's ARC/PLC paid that fall, plus other USDA payments) as one flat dollars-per-acre amount, identical for every crop and constant across cells.
 - **County yield toggle** — see below.
-- **Entity filter** — narrows acres, positions, and policies; agent-held or whole-operation contracts count toward each entity by its share of the crop's planted acres.
+- **Entity filter** — narrows acres, positions, and policies; agent-held or whole-operation contracts count toward each entity by its share of the crop's planted acres. Pick the **marketing agent** itself and you see its whole book: everything it has sold and hedged for the operation, against the whole operation's production.
 - **Export Excel / PDF / Print** — the tables with the price axis as the first column and your active toggles noted.
 
 ## How the numbers work
@@ -1272,7 +1272,7 @@ The dashboard opens on the current crop year (or the year you last picked). Scro
 
 ## What the controls do
 
-- **Crop year and entity filter** — the crop year list always includes this year and the next two, plus any year you already have plantings, contracts, hedges, or assumptions for — so next year's marketing has a place to live before anything is planted. The entity filter narrows acres and production to that entity. Contracts and hedges held by your marketing agent — or entered with no entity — are marketing for the whole operation, so they count toward each entity in proportion to its share of that crop's planted acres. A contract in an entity's own name counts wholly toward it.
+- **Crop year and entity filter** — the crop year list always includes this year and the next two, plus any year you already have plantings, contracts, hedges, or assumptions for — so next year's marketing has a place to live before anything is planted. The entity filter narrows acres and production to that entity. Contracts and hedges held by your marketing agent — or entered with no entity — are marketing for the whole operation, so they count toward each entity in proportion to its share of that crop's planted acres. A contract in an entity's own name counts wholly toward it. Pick the **marketing agent** itself and you see its whole book: everything it has sold and hedged for the operation, against the whole operation's production.
 - **Edit Assumptions** — a panel with one section per crop: enter an overall yield and cost per acre, or break them out by irrigated/dryland and full-season/double-crop. A blank breakout cell falls back to the overall figure. The **Harvest complete** checkbox tells Turnrow the crop is finished; checking it snaps the yield to the actual average from your loads.
 - **Cotton in bales** — a cotton section quotes production in bales beside pounds of lint: pounds ÷ an assumed bale weight, 500 lb unless you change it. The **lb** box next to the bale count is that assumption (per crop and crop year); type a different weight and the count follows, or clear it to go back to 500. Once gin receipts exist the actual ginned bale count shows alongside.
 - **Assumed acres (planning a year before planting)** — for a crop year with no plantings yet, each crop's section in the panel takes **assumed acres** instead: an overall figure, or split by irrigated/dryland like the yield. The Double-crop rows appear only for a crop designated Double-crop under Settings → Crops (soybeans after wheat); every other crop shows just Irrigated and Dryland. If you later change a crop's designation, acres already entered in a Double-crop row are not lost — a note says so and offers to clear them. Enter the acres and the expected yield and the dashboard values the year's contracts and hedges against that expected production — 2027 wheat you've already sold ahead, 2028 corn you've hedged. Crops with no acres assumed stay off the dashboard. The moment the first field is planted to a crop for that year, the **planted acres take over automatically** and the assumed figure is ignored (the panel then reads "using planted acres"). Assumed acres are for the whole operation, so they show under **All entities**; an entity filter still goes by the fields actually planted.
@@ -1352,7 +1352,7 @@ The report opens on the current crop year (or the year you last picked); narrow 
 ## What the controls do
 
 - **Crop year** — the year everything reports on.
-- **Entity filter** — narrows acres, production, policies, and payments to that entity. Contracts and hedges held by your marketing agent, or entered with no entity, are whole-operation marketing: they count toward each entity by its share of the crop's planted acres, while an entity's own-name contracts stay wholly its own.
+- **Entity filter** — narrows acres, production, policies, and payments to that entity. Contracts and hedges held by your marketing agent, or entered with no entity, are whole-operation marketing: they count toward each entity by its share of the crop's planted acres, while an entity's own-name contracts stay wholly its own. Pick the **marketing agent** itself and you see its whole book: everything it has sold and hedged for the operation, against the whole operation's production.
 - **Export Excel / PDF / Print** — the full summary with the filter line included.
 
 ## How the numbers work
@@ -1828,7 +1828,7 @@ Entities are the companies and people that farm — an LLC, a partnership, you a
 
 - **Counties** — the counties this entity farms in. Farms and bin sites under the entity choose from these, so add every county you have ground in.
 - **Payment-limit persons** — the eligible persons for FSA payment limits. The entity's total ARC/PLC cap is this number times the program year's per-person limit. Set it once; change it if the entity's structure changes.
-- **Role** — a **farming entity** (the usual) or a **marketing agent**: one entity that holds the contracts and hedge account on behalf of the whole operation. In entity-filtered reports the agent's marketing flows down to each farming entity by its share of the crop's planted acres, so income lands where the grain was grown.
+- **Role** — a **farming entity** (the usual) or a **marketing agent**: one entity that holds the contracts and hedge account on behalf of the whole operation. In entity-filtered reports the agent's marketing flows down to each farming entity by its share of the crop's planted acres, so income lands where the grain was grown. Picking the agent itself in a report shows its whole book.
 
 ## Common questions
 
