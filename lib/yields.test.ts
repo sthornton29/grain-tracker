@@ -10,6 +10,8 @@ import {
   groupYieldAggregates,
   practiceOf,
   resolvePracticeBreakout,
+  resolveCottonPracticeBreakout,
+  cottonPracticeYields,
   withLoadBreakouts,
   IN_PROGRESS_THRESHOLD,
   IN_PROGRESS_STALE_DAYS,
@@ -1191,8 +1193,64 @@ describe('fieldCropAggregates — practice designation', () => {
   })
 })
 
+describe('resolveCottonPracticeBreakout', () => {
+  // River South-shaped: 235.53 irrigated + 33.65 dryland acres of cotton.
+  const cottonPlanting = (over: Parameters<typeof mixedPlanting>[0] = {}) =>
+    mixedPlanting({ crop_id: 'cotton', season_year: 2026, irrigated_acres: 235.53, dryland_acres: 33.65, ...over })
+
+  it('no saved split: source null — a mixed cotton field is split only by hand', () => {
+    const b = resolveCottonPracticeBreakout(cottonPlanting(), 392045)
+    expect(b.source).toBeNull()
+    expect(b.irrigatedBushels).toBeNull()
+    expect(b.drylandBushels).toBeNull()
+  })
+
+  it('a split that adds up to the field lint reads back exactly as saved', () => {
+    const b = resolveCottonPracticeBreakout(cottonPlanting({ yield_breakout_entered: true, irrigated_bushels: 360000, dryland_bushels: 32045 }), 392045)
+    expect(b.source).toBe('manual')
+    expect(b.irrigatedBushels).toBeCloseTo(360000, 6)
+    expect(b.drylandBushels).toBeCloseTo(32045, 6)
+  })
+
+  it('lint that moved after the split was saved is shared out in the saved proportions', () => {
+    // Saved 300,000 / 100,000 against a 400,000 lb estimate; the gin's figures
+    // came in at 392,000 → 75% / 25% of the new total.
+    const b = resolveCottonPracticeBreakout(cottonPlanting({ yield_breakout_entered: true, irrigated_bushels: '300000', dryland_bushels: '100000' }), 392000)
+    expect(b.irrigatedBushels).toBeCloseTo(294000, 6)
+    expect(b.drylandBushels).toBeCloseTo(98000, 6)
+    expect(b.irrigatedBushels! + b.drylandBushels!).toBeCloseTo(392000, 6)
+  })
+
+  it('single-practice cotton never carries a split', () => {
+    const pure = cottonPlanting({ irrigated_acres: 0, dryland_acres: 250, yield_breakout_entered: true, irrigated_bushels: 1, dryland_bushels: 1 })
+    expect(resolveCottonPracticeBreakout(pure, 200000).source).toBeNull()
+  })
+
+  it('cottonPracticeYields: pure fields carry all their lint on one side; a mixed field waits for its split', () => {
+    const dry = cottonPracticeYields(cottonPlanting({ irrigated_acres: 0, dryland_acres: 100 }), 90000)
+    expect(dry).toMatchObject({ kind: 'pure-dry', drylandLbs: 90000, drylandPerAcre: 900, irrigatedLbs: null, irrigatedPerAcre: null, entered: false })
+    const irr = cottonPracticeYields(cottonPlanting({ irrigated_acres: 50, dryland_acres: 0 }), 60000)
+    expect(irr).toMatchObject({ kind: 'pure-irr', irrigatedLbs: 60000, irrigatedPerAcre: 1200, drylandPerAcre: null })
+    const mixedOpen = cottonPracticeYields(cottonPlanting(), 392045)
+    expect(mixedOpen).toMatchObject({ kind: 'mixed', irrigatedLbs: null, drylandLbs: null, irrigatedPerAcre: null, drylandPerAcre: null, entered: false })
+    const mixedSplit = cottonPracticeYields(cottonPlanting({ irrigated_acres: 200, dryland_acres: 50, yield_breakout_entered: true, irrigated_bushels: 240000, dryland_bushels: 35000 }), 275000)
+    expect(mixedSplit.entered).toBe(true)
+    expect(mixedSplit.irrigatedPerAcre).toBeCloseTo(1200, 6)
+    expect(mixedSplit.drylandPerAcre).toBeCloseTo(700, 6)
+    // Nothing picked yet: no per-acre figure (the table's "—"), not 0.0.
+    expect(cottonPracticeYields(cottonPlanting({ irrigated_acres: 0, dryland_acres: 100 }), 0).drylandPerAcre).toBeNull()
+  })
+
+  it('a saved 0 / 0 split stays 0 / 0 rather than dividing by zero', () => {
+    const b = resolveCottonPracticeBreakout(cottonPlanting({ yield_breakout_entered: true, irrigated_bushels: 0, dryland_bushels: 0 }), 1000)
+    expect(b.source).toBe('manual')
+    expect(b.irrigatedBushels).toBe(0)
+    expect(b.drylandBushels).toBe(0)
+  })
+})
+
 describe('resolvePracticeBreakout', () => {
-  const aggOf = (loads: LoadLike[], splits: SplitLike[] = []) =>
+  const aggOf =(loads: LoadLike[], splits: SplitLike[] = []) =>
     fieldCropAggregates(loads, splits, cropById).get('fA|corn|2025')
 
   it('all loads designated: source "loads", breakout equals the designated sums', () => {

@@ -14,9 +14,13 @@
 //     its side. A MIXED planting (both acre columns > 0) uses its breakout —
 //     the Yields-page manual allocation, or the load-derived split when every
 //     counted load/portion carries a practice tag (withLoadBreakouts) — taking
-//     irrigated_bushels / dryland_bushels AS ENTERED. A mixed planting with no
-//     breakout gates the report once harvest is complete; "Generate as
-//     dryland" rolls its production into dryland (acres still split).
+//     irrigated_bushels / dryland_bushels AS ENTERED. Cotton's split is typed
+//     in lint lbs and applied as shares of the field's current lint
+//     (lib/yields resolveCottonPracticeBreakout), so a statement that lands
+//     after the split was saved never leaves the two sides short of the field.
+//     A mixed planting with no breakout gates the report once harvest is
+//     complete; "Generate as dryland" rolls its production into dryland
+//     (acres still split).
 //   * Certified acres = the planting's irrigated_acres / dryland_acres.
 //     County = the field's county, else the farm's; state from the county.
 //   * Harvest in progress: a planting still classified in_progress by the
@@ -29,7 +33,7 @@
 //     (the field's farm's entity), and the crop multi-select.
 
 import {
-  analyzeYields, buildYieldInputs, fieldCropAggregates, harvestStatusOf, withLoadBreakouts,
+  analyzeYields, buildYieldInputs, fieldCropAggregates, harvestStatusOf, resolveCottonPracticeBreakout, withLoadBreakouts,
   type CombineEntryLike, type CottonYieldAdapter, type ExpectedYieldAssumption, type FieldCropAgg, type HarvestStatus,
 } from '@/lib/yields'
 import { buildDoubleCropSet } from '@/lib/plantings'
@@ -272,7 +276,12 @@ export function buildProductionReport(input: ProductionReportInput): ProductionR
       let irrBu = 0
       let dryBu = 0
       let breakout: BreakoutKind
-      if (isMixed && hasBreakout) {
+      if (isMixed && hasBreakout && isCotton) {
+        const b = resolveCottonPracticeBreakout(p, totalBu)
+        irrBu = b.irrigatedBushels ?? 0
+        dryBu = b.drylandBushels ?? 0
+        breakout = 'entered'
+      } else if (isMixed && hasBreakout) {
         irrBu = (p.irrigated_bushels != null ? Number(p.irrigated_bushels) : 0) * balanceFactor
         dryBu = (p.dryland_bushels != null ? Number(p.dryland_bushels) : 0) * balanceFactor
         breakout = original?.yield_breakout_entered ? 'entered' : 'loads'

@@ -582,6 +582,13 @@ export function buildProductionAuditPayload(input0: ProductionAuditInput): Expor
         case 'entered':
           share = iferror(div(self(practice === 'irrigated' ? 'entered_irr' : 'entered_dry'), add(self('entered_irr'), self('entered_dry'))), num(0))
           production = mul(self('field_total'), self('share'))
+          if (r.source === 'cotton') {
+            // Cotton's split is a share by design (lib/yields
+            // resolveCottonPracticeBreakout): the field's lint can move after
+            // the split is saved, so a different total is not an error.
+            rule = 'Mixed planting with an entered split: this practice takes its share of the field\'s lint (share = entered irrigated or dryland lint lbs ÷ their sum), so the split follows the gin\'s figures as they come in.'
+            break
+          }
           check = formula(iff(lt(abs(sub(add(self('entered_irr'), self('entered_dry')), self('field_total'))), num(0.5)), str('OK'), str('CHECK')))
           rule = 'Mixed planting with an entered breakout: this practice takes its share of the field total (share = entered irrigated or dryland bushels ÷ their sum). Check: entered irrigated + dryland = field total.'
           break

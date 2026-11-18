@@ -1,7 +1,7 @@
 ---
 page_route: /reports/crop-insurance
 title: Crop Insurance Production Report
-updated: 2026-11-17
+updated: 2026-11-18
 keywords: crop insurance, production report, insurance agent, county, practice, irrigated, dryland, certified acres, yield, breakout, APH, excel, workbook, farm, FSA farm number, county sheets, formulas, load data, balanced to settlements, production basis, settled bushels, factor
 ---
 ## What this page is for
@@ -29,7 +29,7 @@ This report lays out your production the way your crop insurance agent needs it:
 
 - Production comes from your recorded loads, with split loads credited to the right fields. Each load's dry bushels use the crop's base moisture and pounds per bushel from Settings → Crops. A field entered from the combine monitor (Yield from Combine) uses that entry as its production, with any scale tickets from the field netted inside it. Cotton reports pounds of lint from gin receipts, plus an estimate at the resolved turnout for cotton picked but not yet ginned.
 - Certified acres are the planting's irrigated and dryland acres for the year. County comes from the field, or from the farm when the field has none.
-- A field planted **part irrigated and part dryland** needs its production divided between the two practices before it can appear here, because insurance treats the practices separately. The report will list the fields that need this and pause until you either enter the breakout on the Yields page or choose to count the whole field as dryland. If every load from a mixed field carries an irrigated/dryland tag, the breakout comes from the loads and nothing is asked.
+- A field planted **part irrigated and part dryland** needs its production divided between the two practices before it can appear here, because insurance treats the practices separately. The report will list the fields that need this and pause until you either enter the breakout on the Yields page or choose to count the whole field as dryland. If every load from a mixed field carries an irrigated/dryland tag, the breakout comes from the loads and nothing is asked. A cotton field — a pivot with dryland corners — is split in lint pounds with **Allocate irr/dry** on the Yields cotton table; the report gives each practice its share of the field's lint, so the split still adds up after gin receipts replace an estimate.
 - That question is only asked **once a field's harvest is complete**. A field still being harvested is **left out of the report** — its acres and its bushels — and listed under the filters, so a half-harvested field never certifies a misleading yield. Tap **Count anyway** next to it if it is actually done. A field with no loads yet keeps its acres and shows no production.
 - Any load of the crop year the report leaves out is listed under the filters with its reason and a link — a load hauled in a different calendar year than its crop year (it is credited to that year's planting of the field), a load from a field with no planting for the crop and year, a load with no crop year, a load with no bushels. Nothing is hidden.
 - Yield per acre is production divided by certified acres for each county and practice combination. Total rows divide total production by total acres — never an average of the yields.
@@ -86,7 +86,7 @@ The Excel file is laid out for the person you send it to. It opens on the same r
 - **Does the export match the screen?** Yes. The PDF and the first tabs of the Excel file show the same Summary and the same county-by-practice farm pages as the screen, and the Excel file's Notes tab checks its totals against the screen for each crop.
 - **Which tabs does my agent need?** The green ones: Summary and the county tabs. The rest are there if an adjuster asks to see the fields and scale tickets behind a number.
 - **The balanced factor looks wrong.** Check the panel: an unmatched settlement line can't count until it is matched to its load, and a delivery with no settlement yet counts at your own dry bushels until the settlement arrives. A factor more than 5% from 1 usually means a settlement or a load is missing.
-- **The Notes tab says CHECK.** The workbook's formulas and the screen disagree for that crop. The usual cause is a mixed field whose entered breakout no longer adds up to its loads (its Field Production check cell will also say CHECK) — re-enter the breakout on the Yields page.
+- **The Notes tab says CHECK.** The workbook's formulas and the screen disagree for that crop. The usual cause is a mixed field whose entered breakout no longer adds up to its loads (its Field Production check cell will also say CHECK) — re-enter the breakout on the Yields page. A cotton field's split never reads CHECK: it is a share of the field's lint by design.
 
 ## If something looks wrong
 

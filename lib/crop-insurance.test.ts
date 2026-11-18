@@ -825,6 +825,17 @@ describe('practiceActualYieldByCrop', () => {
     expect(m.get('corn|irrigated')).toBeCloseTo((22000 + 20000) / 200, 6) // 210
     expect(m.get('corn|non_irrigated')).toBeCloseTo(8000 / 50, 6) // 160
   })
+
+  it('a cotton split (lint lbs) never stands in for the whole practice — cotton projections keep their default yields', () => {
+    const plantings = [
+      mkPlanting({ crop_id: 'cot', irrigated_acres: 205, irrigated_bushels: 300000, dryland_acres: 44.88, dryland_bushels: 61789 }),
+      mkPlanting({ irrigated_acres: 100, irrigated_bushels: 22000 }),
+    ]
+    const m = practiceActualYieldByCrop(plantings, 2026, [{ id: 'cot', name: 'Cotton' }, { id: 'corn', name: 'Corn' }])
+    expect(m.has('cot|irrigated')).toBe(false)
+    expect(m.has('cot|non_irrigated')).toBe(false)
+    expect(m.get('corn|irrigated')).toBeCloseTo(220, 6)
+  })
 })
 
 // ---------------------------------------------------------------------------

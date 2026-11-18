@@ -1,7 +1,8 @@
 'use client'
 
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
-import CottonYieldsSection, { cottonSectionExport, type CottonSectionRow } from '@/components/reports/cotton-yields-section'
+import CottonYieldsSection, { cottonSectionExport, type CottonPracticeColumns, type CottonSectionRow } from '@/components/reports/cotton-yields-section'
+import PracticeSplitEditor from '@/components/practice-split-editor'
 import { TurnoutLines, cottonTurnoutLines, type CottonTurnoutLine } from '@/components/reports/turnout-control'
 import { saveTurnoutAssumption } from '@/lib/turnout-save'
 import { createClient } from '@/lib/supabase/client'
@@ -12,7 +13,7 @@ import { resolveCropAssumptions } from '@/lib/viewer-assumptions'
 import { useCottonYields } from '@/lib/use-cotton-yields'
 import { roleCanEditYields } from '@/lib/app-role'
 import { roleAllowsPath } from '@/lib/route-guard'
-import { fieldCropAggregates, analyzeYields, buildYieldInputs, cohortKey, harvestStatusOf, isHarvestComplete, groupYieldAggregates, practiceOf, resolvePracticeBreakout, NO_DC_ASSUMPTION_NOTE, type CropAverage, type HarvestProgress, type GroupYieldAgg, type GroupYieldPlanting, type PracticeBreakout } from '@/lib/yields'
+import { fieldCropAggregates, analyzeYields, buildYieldInputs, cohortKey, harvestStatusOf, isHarvestComplete, groupYieldAggregates, practiceOf, resolvePracticeBreakout, resolveCottonPracticeBreakout, cottonPracticeYields, NO_DC_ASSUMPTION_NOTE, type CropAverage, type HarvestProgress, type GroupYieldAgg, type GroupYieldPlanting, type PracticeBreakout } from '@/lib/yields'
 import { summarizeCottonCropProgress, type CottonCropProgress, type CottonFieldYieldRow } from '@/lib/cotton-field-yields'
 import { buildDoubleCropSet, buildSpringCropByFieldYear, cropHasBothCroppings, croppingOf, CROPPING_LABEL, type Cropping } from '@/lib/plantings'
 import { isCottonCrop } from '@/lib/marketing'
@@ -143,14 +144,11 @@ export default function YieldsPage() {
   // view is designated Double-crop and the season has both kinds planted.
   const [croppingFilter, setCroppingFilter] = usePersistentState<CroppingFilter>('yields:cropping', 'all')
 
-  // Breakout-entry UI state. Tracks which planting's row is being allocated
-  // and the in-flight input values. `lastTouched` records which of the two
-  // inputs the user typed in most recently — used to auto-fill the other so
-  // the pair sums to total dry bushels.
+  // Breakout-entry UI state: which planting's split is open (grain or cotton —
+  // one at a time across both tables) and the figures its editor opens with.
+  // The two inputs themselves live in PracticeSplitEditor.
   const [breakoutId, setBreakoutId] = useState<string | null>(null)
-  const [breakoutIrr, setBreakoutIrr] = useState('')
-  const [breakoutDry, setBreakoutDry] = useState('')
-  const [lastTouched, setLastTouched] = useState<'irr' | 'dry' | null>(null)
+  const [breakoutInit, setBreakoutInit] = useState<{ irr: string; dry: string }>({ irr: '', dry: '' })
   const [breakoutSaving, setBreakoutSaving] = useState(false)
   const [breakoutErr, setBreakoutErr] = useState<string | null>(null)
 
@@ -332,12 +330,8 @@ export default function YieldsPage() {
   const dryBuFor = (fieldId: string, cropId: string, year: number) =>
     aggByKey.get(`${fieldId}|${cropId}|${year}`)?.dryBu ?? 0
 
-  // Effective irrigated/dryland breakout for a mixed planting, whichever path
-  // produced it: the manual post-harvest allocation (always wins) or fully
-  // practice-tagged loads. Every per-practice consumer on this page reads
-  // through this so the two paths never fork.
-  const breakoutFor = (p: FieldPlanting): PracticeBreakout =>
-    resolvePracticeBreakout(p, aggByKey.get(`${p.field_id}|${p.crop_id}|${p.season_year}`))
+  // (breakoutFor — the effective irrigated/dryland split — is defined below,
+  // once a cotton planting's lint is known.)
 
   const distinctYears = useMemo(() => {
     const s = new Set<number>([currentYear()])
@@ -418,6 +412,15 @@ export default function YieldsPage() {
   const prodFor = (p: FieldPlanting) => (isCottonId(p.crop_id) ? lintFor(p) : dryBuFor(p.field_id, p.crop_id, p.season_year))
   // Unit of a crop's production / yield columns.
   const unitOf = (id: string): 'bu' | 'lbs' => (isCottonId(id) ? 'lbs' : 'bu')
+  // Effective irrigated/dryland breakout for a mixed planting, whichever path
+  // produced it: grain — the manual post-harvest allocation (always wins) or
+  // fully practice-tagged loads; cotton — the manual allocation in lint lbs,
+  // applied as shares of the field's current lint. Every per-practice consumer
+  // on this page reads through this so the paths never fork.
+  const breakoutFor = (p: FieldPlanting): PracticeBreakout =>
+    isCottonId(p.crop_id)
+      ? resolveCottonPracticeBreakout(p, lintFor(p))
+      : resolvePracticeBreakout(p, aggByKey.get(`${p.field_id}|${p.crop_id}|${p.season_year}`))
   // The averages header: cotton crops speak in LINT lbs/ac (the analysis's
   // own figure for them is seed cotton, the classifier's unit).
   const displayAverages = useMemo(() => {
@@ -522,12 +525,13 @@ export default function YieldsPage() {
 
   // Toggle visibility: hide when nothing irrigated and no breakouts entered.
   // Once any season has an irrigated planting or an allocated breakout, the
-  // breakdown view becomes useful, so we show the toggle.
+  // breakdown view becomes useful, so we show the toggle. Cotton plantings
+  // (their own table) count too — the toggle drives the cotton columns.
   const showYieldToggle = useMemo(() => {
-    return visible.some(
+    return [...visible, ...visibleCotton].some(
       (p) => p.yield_breakout_entered || Number(p.irrigated_acres) > 0,
     )
-  }, [visible])
+  }, [visible, visibleCotton])
 
   // Column visibility:
   //   All practice  + total      -> Total only
@@ -545,6 +549,22 @@ export default function YieldsPage() {
   // Farm view has no practice filter, so its breakdown is driven purely by the
   // toggle: total only, or irrigated + dryland + total side by side.
   const farmShowBreakdown = yieldView === 'breakdown'
+
+  // The cotton table's irrigated / dryland columns — the grain table's rules.
+  // The Practice filter is a by-field control; the cotton table under the
+  // farm / entity views follows the switch alone, like their rollups. The
+  // variety view has no breakdown.
+  const cottonPracticeCols: CottonPracticeColumns = (() => {
+    const pf: PracticeFilter = view === 'field' ? practiceFilter : 'all'
+    const breakdown = yieldView === 'breakdown' && view !== 'variety'
+    return {
+      irrigated: pf === 'irrigated' || (pf === 'all' && breakdown),
+      dryland: pf === 'dryland' || (pf === 'all' && breakdown),
+      total: pf === 'all',
+      fallback: pf === 'all' ? null : pf,
+      allocate: breakdown,
+    }
+  })()
 
   const inputCls = selectCls
 
@@ -972,6 +992,7 @@ export default function YieldsPage() {
         autoFlag,
         overridden: p.yield_include_override === true && autoFlag === 'in_progress',
         noBaseline: yieldAnalysis.noBaseline.has(p.id),
+        practice: cottonPracticeYields(p, y.lintLbs),
       }
     })
   const cottonRows = useMemo(() => {
@@ -1090,7 +1111,7 @@ export default function YieldsPage() {
   function buildFieldPayload(): ExportPayload {
     // Cotton crop filter: the cotton table IS the page's table.
     if (cottonFilter) {
-      return { title: 'Cotton Yields by Field', filters: fieldFiltersLabel(), summary: yieldSummaryCards(), sections: [cottonSectionExport(cottonRows, 'By Field')] }
+      return { title: 'Cotton Yields by Field', filters: fieldFiltersLabel(), summary: yieldSummaryCards(), sections: [cottonSectionExport(cottonRows, 'By Field', cottonPracticeCols)] }
     }
     const columns: ExportColumn[] = [
       { label: 'Field' },
@@ -1139,7 +1160,7 @@ export default function YieldsPage() {
     const detailSection = openDetailExportSection('field')
     if (detailSection) sections.push(detailSection)
     // The cotton table rides along below the grain table, as on screen.
-    if (cottonOn && cottonRows.length > 0) sections.push(cottonSectionExport(cottonRows, `Cotton — ${cropYearLabel(year)}`))
+    if (cottonOn && cottonRows.length > 0) sections.push(cottonSectionExport(cottonRows, `Cotton — ${cropYearLabel(year)}`, cottonPracticeCols))
     return { title: exportTitle('Yields by Field'), filters: fieldFiltersLabel(), summary: yieldSummaryCards(), sections }
   }
 
@@ -1260,65 +1281,45 @@ export default function YieldsPage() {
   function openBreakout(p: FieldPlanting) {
     setBreakoutId(p.id)
     setBreakoutErr(null)
-    setLastTouched(null)
     const b = breakoutFor(p)
-    if (p.yield_breakout_entered) {
-      setBreakoutIrr(p.irrigated_bushels != null ? String(p.irrigated_bushels) : '')
-      setBreakoutDry(p.dryland_bushels != null ? String(p.dryland_bushels) : '')
+    if (isCottonId(p.crop_id)) {
+      // Cotton: a saved split opens at today's lint (its shares × the field's
+      // current lint, whole pounds) so the two sides add up to the row.
+      if (p.yield_breakout_entered && b.irrigatedBushels != null) {
+        const irr = Math.round(b.irrigatedBushels)
+        setBreakoutInit({ irr: String(irr), dry: String(Math.max(0, Math.round(lintFor(p) - irr))) })
+      } else {
+        setBreakoutInit({ irr: '', dry: '' })
+      }
+    } else if (p.yield_breakout_entered) {
+      setBreakoutInit({
+        irr: p.irrigated_bushels != null ? String(p.irrigated_bushels) : '',
+        dry: p.dryland_bushels != null ? String(p.dryland_bushels) : '',
+      })
     } else if (b.designatedLoads > 0) {
       // Pre-fill from the loads that carry an irrigated/dryland tag — either
       // the complete load-derived split (adjusting it manually) or a partial
       // one ("from X of Y loads — complete the remainder"). The user confirms
       // the final numbers.
-      setBreakoutIrr(String(Number(b.designatedIrrBu.toFixed(2))))
-      setBreakoutDry(String(Number(b.designatedDryBu.toFixed(2))))
+      setBreakoutInit({ irr: String(Number(b.designatedIrrBu.toFixed(2))), dry: String(Number(b.designatedDryBu.toFixed(2))) })
     } else {
       // No prior allocation — leave inputs blank so the auto-calc kicks in
       // the moment the user types the first number.
-      setBreakoutIrr('')
-      setBreakoutDry('')
+      setBreakoutInit({ irr: '', dry: '' })
     }
   }
 
-  function onBreakoutIrr(v: string, totalDryBu: number) {
-    setBreakoutIrr(v)
-    setLastTouched('irr')
-    // Auto-fill the dryland side if it hasn't been manually overridden in
-    // this session (lastTouched stays 'irr' until user clicks the dry input).
-    if (lastTouched !== 'dry') {
-      const n = Number(v || 0) || 0
-      const dry = Math.max(0, totalDryBu - n)
-      setBreakoutDry(v === '' ? '' : String(Number(dry.toFixed(2))))
-    }
-  }
-
-  function onBreakoutDry(v: string, totalDryBu: number) {
-    setBreakoutDry(v)
-    setLastTouched('dry')
-    if (lastTouched !== 'irr') {
-      const n = Number(v || 0) || 0
-      const irr = Math.max(0, totalDryBu - n)
-      setBreakoutIrr(v === '' ? '' : String(Number(irr.toFixed(2))))
-    }
-  }
-
-  function breakoutSumValid(totalDryBu: number): boolean {
-    const i = Number(breakoutIrr || 0) || 0
-    const d = Number(breakoutDry || 0) || 0
-    // Allow a tiny fudge for floating point — yield maps come in with two
-    // decimals so 0.01 is plenty of slack.
-    return Math.abs(i + d - totalDryBu) < 0.01
-  }
-
-  async function saveBreakout(p: FieldPlanting, totalDryBu: number) {
+  // Saves a split the editor has already checked adds up — grain in dry
+  // bushels, cotton in lint lbs, into the planting's production-by-practice
+  // columns either way.
+  async function saveBreakout(p: FieldPlanting, irrigated: number, dryland: number) {
     if (!canEdit) return
-    if (!breakoutSumValid(totalDryBu)) return
     setBreakoutSaving(true)
     const { error } = await supabase
       .from('field_plantings')
       .update({
-        irrigated_bushels: Number(breakoutIrr || 0),
-        dryland_bushels: Number(breakoutDry || 0),
+        irrigated_bushels: irrigated,
+        dryland_bushels: dryland,
         yield_breakout_entered: true,
       })
       .eq('id', p.id)
@@ -1455,6 +1456,45 @@ export default function YieldsPage() {
       confirmLabel: 'Count it',
       onConfirm: () => setInclusionOverride(p, true),
     })
+  }
+  // The cotton table's split: the same open-editor state and save path as the
+  // grain table, in lint lbs (lib/yields resolveCottonPracticeBreakout reads it
+  // back as shares of the field's lint).
+  const cottonSplit = {
+    canEdit,
+    openId: breakoutId,
+    onOpen: (id: string) => { const p = plantings.find((x) => x.id === id); if (p) openBreakout(p) },
+    renderEditor: (r: CottonSectionRow) => {
+      const p = plantings.find((x) => x.id === r.plantingId)
+      if (!p) return null
+      const lint = r.y.lintLbs
+      const saved = (Number(p.irrigated_bushels) || 0) + (Number(p.dryland_bushels) || 0)
+      const irrShare = saved > 0 ? Math.round(((Number(p.irrigated_bushels) || 0) / saved) * 1000) / 10 : null
+      const estimated = r.y.lintBasis === 'estimated_turnout' || r.y.lintBasis === 'mixed'
+      const note = p.yield_breakout_entered && irrShare != null
+        ? `Saved split: ${irrShare}% irrigated / ${Math.round((100 - irrShare) * 10) / 10}% dryland. It is kept as a share of the field’s lint, so both sides move with the gin’s figures — shown here at today’s ${fmtInt(lint)} lbs.`
+        : estimated
+          ? 'Part of this field’s lint is still an estimate for seed cotton on the yard. The split is kept as a share of the field’s lint, so both sides move with the gin’s figures when they come in.'
+          : 'Enter the irrigated and dryland lint lbs — from the picker’s yield map or the modules off each part of the field. The split is kept as a share of the field’s lint.'
+      return (
+        <PracticeSplitEditor
+          key={p.id}
+          total={lint}
+          unitNoun="lint lbs"
+          totalLabel="Total lint lbs"
+          decimals={0}
+          initialIrr={breakoutInit.irr}
+          initialDry={breakoutInit.dry}
+          note={note}
+          saving={breakoutSaving}
+          error={breakoutErr}
+          canClear={!!p.yield_breakout_entered}
+          onSave={(irr, dry) => saveBreakout(p, irr, dry)}
+          onCancel={() => { setBreakoutId(null); setBreakoutErr(null) }}
+          onClear={() => askClearBreakout(p)}
+        />
+      )
+    },
   }
   const askClearBreakout = (p: FieldPlanting) => setAsk({
     title: 'Clear the irrigated/dryland breakout for this planting?',
@@ -1652,6 +1692,8 @@ export default function YieldsPage() {
           savingPlantingId={overrideSavingId}
           openKey={openDetail?.view === 'field' ? openDetail.key : null}
           onToggle={(key) => toggleDetail('field', key, '')}
+          practiceColumns={cottonPracticeCols}
+          split={cottonSplit}
         />
       ) : view === 'landowner' ? (
         <YieldsByLandowner
@@ -2080,86 +2122,34 @@ export default function YieldsPage() {
                     {isBreakoutOpen && (
                       <tr className="bg-sky-50 no-print">
                         <td colSpan={fieldColCount} className="px-3 py-3">
-                          {(() => {
-                            const b = breakoutFor(p)
-                            if (p.yield_breakout_entered) {
-                              return (
-                                <p className="text-xs text-slate-600 mb-2">
-                                  Manual split — it stays in charge even if the irrigated/dryland tags on this
-                                  field&rsquo;s loads change later. Clear it to go back to using the load tags.
-                                </p>
-                              )
-                            }
-                            if (b.source === 'loads') {
-                              return (
-                                <p className="text-xs text-slate-600 mb-2">
-                                  This split comes from the irrigated/dryland tags on all {b.totalLoads} of this
-                                  field&rsquo;s loads. Saving here replaces it with a manual split, which then stays
-                                  in charge even if the load tags change later.
-                                </p>
-                              )
-                            }
-                            if (b.designatedLoads > 0) {
-                              return (
-                                <p className="text-xs text-slate-600 mb-2">
-                                  Pre-filled from {b.designatedLoads} of {b.totalLoads} tagged loads — complete the
-                                  remainder and save to confirm the final split.
-                                </p>
-                              )
-                            }
-                            return null
-                          })()}
-                          <div className="flex flex-wrap items-end gap-3">
-                            <div className="text-sm text-slate-600">
-                              Total dry bushels: <span className="font-semibold">{fmtInt(r.dryBu)}</span>
-                            </div>
-                            <label className="text-xs text-slate-500 flex flex-col gap-1">
-                              Irrigated bushels
-                              <input
-                                type="number"
-                                step="0.01"
-                                min="0"
-                                value={breakoutIrr}
-                                onChange={(e) => onBreakoutIrr(e.target.value, r.dryBu)}
-                                className={`${inputCls} w-40`}
-                              />
-                            </label>
-                            <label className="text-xs text-slate-500 flex flex-col gap-1">
-                              Dryland bushels
-                              <input
-                                type="number"
-                                step="0.01"
-                                min="0"
-                                value={breakoutDry}
-                                onChange={(e) => onBreakoutDry(e.target.value, r.dryBu)}
-                                className={`${inputCls} w-40`}
-                              />
-                            </label>
-                            <button
-                              type="button"
-                              disabled={breakoutSaving || !breakoutSumValid(r.dryBu)}
-                              onClick={() => saveBreakout(p, r.dryBu)}
-                              className="rounded-lg bg-brand hover:bg-brand-deep text-white px-3 min-h-10 text-sm font-semibold disabled:opacity-50"
-                            >Save</button>
-                            <button
-                              type="button"
-                              onClick={() => { setBreakoutId(null); setBreakoutErr(null) }}
-                              className="inline-flex items-center min-h-10 px-3 rounded-lg border border-slate-300 bg-white text-slate-600 text-sm"
-                            >Cancel</button>
-                            {p.yield_breakout_entered && (
-                              <button
-                                type="button"
-                                onClick={() => askClearBreakout(p)}
-                                className="inline-flex items-center min-h-10 px-3 rounded-lg text-red-700 text-sm ml-auto hover:bg-red-50"
-                              >Clear breakout</button>
-                            )}
-                          </div>
-                          {!breakoutSumValid(r.dryBu) && (breakoutIrr !== '' || breakoutDry !== '') && (
-                            <p className="text-sm text-red-600 mt-2">
-                              Irrigated + Dryland bushels must equal total bushels ({fmtInt(r.dryBu)})
-                            </p>
-                          )}
-                          {breakoutErr && <p className="text-sm text-red-600 mt-2">{breakoutErr}</p>}
+                          <PracticeSplitEditor
+                            key={p.id}
+                            total={r.dryBu}
+                            unitNoun="bushels"
+                            totalLabel="Total dry bushels"
+                            decimals={2}
+                            initialIrr={breakoutInit.irr}
+                            initialDry={breakoutInit.dry}
+                            note={(() => {
+                              const b = breakoutFor(p)
+                              if (p.yield_breakout_entered) {
+                                return 'Manual split — it stays in charge even if the irrigated/dryland tags on this field’s loads change later. Clear it to go back to using the load tags.'
+                              }
+                              if (b.source === 'loads') {
+                                return `This split comes from the irrigated/dryland tags on all ${b.totalLoads} of this field’s loads. Saving here replaces it with a manual split, which then stays in charge even if the load tags change later.`
+                              }
+                              if (b.designatedLoads > 0) {
+                                return `Pre-filled from ${b.designatedLoads} of ${b.totalLoads} tagged loads — complete the remainder and save to confirm the final split.`
+                              }
+                              return null
+                            })()}
+                            saving={breakoutSaving}
+                            error={breakoutErr}
+                            canClear={!!p.yield_breakout_entered}
+                            onSave={(irr, dry) => saveBreakout(p, irr, dry)}
+                            onCancel={() => { setBreakoutId(null); setBreakoutErr(null) }}
+                            onClear={() => askClearBreakout(p)}
+                          />
                         </td>
                       </tr>
                     )}
@@ -2392,6 +2382,8 @@ export default function YieldsPage() {
           canEdit={canEdit}
           allowLoadLinks={roleAllowsPath(viewer.role, '/cotton')}
           loading={cottonYields.loading}
+          practiceColumns={cottonPracticeCols}
+          split={cottonSplit}
           onSaveTurnout={canEdit || viewer.isViewer ? saveTurnout : undefined}
           onCountAnyway={(id) => { const p = plantings.find((x) => x.id === id); if (p) askCountAnyway(p) }}
           onUndoCount={(id) => { const p = plantings.find((x) => x.id === id); if (p) setInclusionOverride(p, null) }}

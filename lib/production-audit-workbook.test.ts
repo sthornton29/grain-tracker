@@ -660,6 +660,41 @@ describe('audit workbook — cotton', () => {
     expect(rowsOf(payload, AUDIT.notes).find((r) => r.item === 'Cotton: Difference')!.check).toBe('OK')
   })
 
+  // A mixed cotton field (a pivot with dryland corners) split on the Yields
+  // page in lint lbs. The split was saved against 40,000 lbs; the gin's
+  // figures have since settled the field at 39,000 — each side keeps its
+  // share (75 / 25), so the two practices still add up to the field.
+  it('a mixed cotton field\'s entered split is applied as shares of the field\'s current lint', () => {
+    const CF = field('cot', 'Wheeler Pivot', 'f-home', 60, 20)
+    const ri = reportInput({
+      crops: [CORN, COTTON], fields: [CF], farms: [farms[0]], loads: [], splits: [], combineEntries: [],
+      plantings: [planting('p-cot', 'cot', 60, 20, { yield_breakout_entered: true, irrigated_bushels: 30000, dryland_bushels: 10000 }, 'cotton')],
+      assumptions: [{ crop_id: 'cotton', crop_year: 2026, expected_yield: null, harvest_complete: true }],
+      cotton: { on: true, cottonCropIds: new Set(['cotton']), adapter: null, yieldFor: () => ({ lintLbs: 39000 }) },
+    })
+    const report = buildProductionReport(ri)
+    expect(report.isBlocked).toBe(false)
+    const r = report.resolved.find((x) => x.planting.id === 'p-cot')!
+    expect(r.breakout).toBe('entered')
+    near(r.irrigatedBu, 29250); near(r.drylandBu, 9750)
+    const payload = buildProductionAuditPayload(auditInput(ri, {
+      report,
+      cotton: {
+        receipts: [{ id: 'rc1', gin_id: null, receipt_number: 'R-1', receipt_date: '2026-10-01', field_id: 'cot', crop_year: 2026, total_seed_cotton_weight: 97500, bales_count: 78, total_bale_weight: 39000 }],
+        bales: [], gins: [],
+        yieldFor: () => ({ yardSeedLbs: 0, estimatedLintLbs: 0, actualLintLbs: 39000, turnout: { fraction: 0.4, pct: 40, label: '40.0%' } }),
+      },
+    }))
+    const fp = rowsOf(payload, AUDIT.fieldProduction)
+    const irr = fp.find((x) => x.practice === 'Irrigated')!
+    const dry = fp.find((x) => x.practice === 'Dryland')!
+    near(irr.production, 29250); near(dry.production, 9750)
+    // A share by design: no CHECK flag when the field's lint has moved on.
+    expect(irr.check).toBe('')
+    expect(String(irr.rule)).toMatch(/share of the field's lint/)
+    expect(rowsOf(payload, AUDIT.notes).find((x) => x.item === 'Cotton: Difference')!.check).toBe('OK')
+  })
+
   // Gin Data is cotton's Load Data: one row per Statement of Ginning, laid out
   // the same way, with the bales behind it — and never a record key in sight.
   describe('Gin Data — the gin\'s statements, like Load Data for grain', () => {

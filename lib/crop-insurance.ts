@@ -1141,14 +1141,24 @@ export type HarvestResolution = {
 
 // Per-practice ACTUAL yield from the planting irrigated/dryland bushel breakout,
 // keyed `cropId|practice`. Only where the breakout is entered and acres > 0.
+//
+// Cotton is left out (2026-11-18): a mixed cotton field's split (lint lbs,
+// lib/yields resolveCottonPracticeBreakout) is for the Yields page and the
+// Production Report. Here only the split fields would count, so the dryland
+// corners of two pivots would stand in for every dryland cotton acre — cotton
+// projections keep their expected / APH yields as before. `crops` names the
+// cotton crops; without it nothing is left out.
 export function practiceActualYieldByCrop(
   plantings: ReadonlyArray<Pick<FieldPlanting, 'crop_id' | 'season_year' | 'irrigated_acres' | 'dryland_acres' | 'irrigated_bushels' | 'dryland_bushels'>>,
   cropYear: number,
+  crops?: ReadonlyArray<Pick<Crop, 'id' | 'name'>>,
 ): Map<string, number> {
+  const cottonIds = new Set((crops ?? []).filter((c) => /cotton/i.test(c.name)).map((c) => c.id))
   const agg = new Map<string, { bu: number; ac: number }>()
   const add = (key: string, b: number, a: number) => { const c = agg.get(key) ?? { bu: 0, ac: 0 }; c.bu += b; c.ac += a; agg.set(key, c) }
   for (const p of plantings) {
     if (p.season_year !== cropYear) continue
+    if (cottonIds.has(p.crop_id)) continue
     if (p.irrigated_bushels != null && Number(p.irrigated_acres) > 0) add(`${p.crop_id}|irrigated`, Number(p.irrigated_bushels), Number(p.irrigated_acres))
     if (p.dryland_bushels != null && Number(p.dryland_acres) > 0) add(`${p.crop_id}|non_irrigated`, Number(p.dryland_bushels), Number(p.dryland_acres))
   }
@@ -1411,7 +1421,7 @@ export function projectInsuranceIndemnities(args: {
     cropIds, cropYear: args.cropYear, policies: yearPolicies, estimates: args.harvestEstimates, liveByCrop: args.liveHarvestByCrop, crops: args.crops,
     keepManualCropIds: args.keepManualCropIds,
   })
-  const practiceActual = practiceActualYieldByCrop(args.plantings, args.cropYear)
+  const practiceActual = practiceActualYieldByCrop(args.plantings, args.cropYear, args.crops)
   const scoBy = new Map(args.scos.map((s) => [s.policy_id, s]))
   const ecoBy = new Map(args.ecos.map((e) => [e.policy_id, e]))
   const staxBy = new Map((args.staxes ?? []).map((s) => [s.policy_id, s]))

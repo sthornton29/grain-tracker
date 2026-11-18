@@ -459,7 +459,7 @@ export default function CropInsuranceClaimsReport({ onPayloadChange, headerActio
   }
   const auditRows: AuditRow[] = useMemo(() => {
     if (!auditMode || cropYear === '') return []
-    const practiceActual = practiceActualYieldByCrop(effPlantings, cropYear)
+    const practiceActual = practiceActualYieldByCrop(effPlantings, cropYear, crops)
     return computed.map((c) => {
       const p = c.policy
       const practice = (p.practice ?? 'non_irrigated') as Practice
@@ -527,7 +527,7 @@ export default function CropInsuranceClaimsReport({ onPayloadChange, headerActio
       })
       return { c, yieldBasis, audit, cmp, invariants }
     })
-  }, [auditMode, computed, cropYear, effPlantings, effAssumptions, yearPolicies, actualYieldByCrop, effCountyAssumptions, scoByPolicy, ecoByPolicy, staxByPolicy, mcoByPolicy, programCfg, cropById])
+  }, [auditMode, computed, cropYear, effPlantings, effAssumptions, yearPolicies, actualYieldByCrop, effCountyAssumptions, scoByPolicy, ecoByPolicy, staxByPolicy, mcoByPolicy, programCfg, cropById, crops])
 
   // Headline summary cards from the already-computed totals (no new math).
   const summaryCards: SummaryCardData[] = useMemo(() => [

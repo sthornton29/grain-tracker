@@ -330,6 +330,94 @@ export function resolvePracticeBreakout(
   return { source: null, irrigatedBushels: null, drylandBushels: null, ...base }
 }
 
+// Cotton's counterpart of resolvePracticeBreakout (2026-11-18) — the ONE rule
+// for a mixed cotton planting's irrigated / dryland LINT split. Every cotton
+// per-practice consumer (the Yields cotton table and rollups, the Crop
+// Insurance Production Report, Claim Check) goes through it.
+//
+//   * The split is the Yields-page allocation, typed in lint lbs and stored in
+//     the planting's irrigated_bushels / dryland_bushels — the planting's
+//     production-by-practice columns, in the crop's own unit (lint lbs for
+//     cotton, as the insurance engine has always read them).
+//   * Seed cotton loads carry no irrigated / dryland tag, so there is no
+//     load-derived path: a mixed cotton planting is split only by hand.
+//   * A field's lint keeps moving after the split is saved (the turnout
+//     estimate replaced by the gin's figure, a late statement), so the saved
+//     figures are applied as SHARES of the field's current lint: the two sides
+//     always add up to the row, and the audit workbook's share formula
+//     (entered side ÷ entered total × field total) agrees with the engine.
+//
+// Fields are named *Bushels to share PracticeBreakout; for cotton they carry
+// lint lbs. Pure.
+export function resolveCottonPracticeBreakout(
+  planting: {
+    irrigated_acres: number | string | null
+    dryland_acres: number | string | null
+    irrigated_bushels: number | string | null
+    dryland_bushels: number | string | null
+    yield_breakout_entered: boolean | null
+  },
+  lintLbs: number,
+): PracticeBreakout {
+  const base = { designatedIrrBu: 0, designatedDryBu: 0, designatedLoads: 0, totalLoads: 0 }
+  if (practiceOf(planting) !== 'mixed' || !planting.yield_breakout_entered) {
+    return { source: null, irrigatedBushels: null, drylandBushels: null, ...base }
+  }
+  const irr = Math.max(0, Number(planting.irrigated_bushels) || 0)
+  const dry = Math.max(0, Number(planting.dryland_bushels) || 0)
+  const saved = irr + dry
+  // Nothing usable saved (both sides zero): keep the figures as they are.
+  if (!(saved > 0)) return { source: 'manual', irrigatedBushels: irr, drylandBushels: dry, ...base }
+  const lint = Math.max(0, lintLbs)
+  const irrigated = lint * (irr / saved)
+  return { source: 'manual', irrigatedBushels: irrigated, drylandBushels: lint - irrigated, ...base }
+}
+
+/** A cotton planting's irrigated / dryland figures, by the grain table's
+ *  per-planting rules: a pure field puts all its lint on its one side; a
+ *  mixed field splits only once a split is saved (else both sides are null —
+ *  the "—" a mixed grain field shows before its allocation). */
+export type CottonPracticeYields = {
+  kind: FieldPractice
+  irrAc: number
+  dryAc: number
+  /** Lint lbs on each side; null when the side cannot be known yet. */
+  irrigatedLbs: number | null
+  drylandLbs: number | null
+  /** Lint lbs per acre on each side; null with no acres or no lint on it. */
+  irrigatedPerAcre: number | null
+  drylandPerAcre: number | null
+  /** A mixed planting with a saved split. */
+  entered: boolean
+}
+
+export function cottonPracticeYields(
+  planting: Parameters<typeof resolveCottonPracticeBreakout>[0],
+  lintLbs: number,
+): CottonPracticeYields {
+  const irrAc = Number(planting.irrigated_acres) || 0
+  const dryAc = Number(planting.dryland_acres) || 0
+  const kind = practiceOf(planting)
+  let irrigatedLbs: number | null = null
+  let drylandLbs: number | null = null
+  let entered = false
+  if (kind === 'pure-irr') irrigatedLbs = lintLbs
+  else if (kind === 'pure-dry') drylandLbs = lintLbs
+  else {
+    const b = resolveCottonPracticeBreakout(planting, lintLbs)
+    entered = b.source != null
+    irrigatedLbs = b.irrigatedBushels
+    drylandLbs = b.drylandBushels
+  }
+  const perAcre = (lbs: number | null, ac: number) => (lbs != null && lbs > 0 && ac > 0 ? lbs / ac : null)
+  return {
+    kind, irrAc, dryAc, irrigatedLbs, drylandLbs,
+    irrigatedPerAcre: perAcre(irrigatedLbs, irrAc),
+    drylandPerAcre: perAcre(drylandLbs, dryAc),
+    entered,
+  }
+}
+
 // Materializes the effective breakout onto planting rows so downstream
 // consumers that read irrigated_bushels / dryland_bushels /
 // yield_breakout_entered straight off the planting (practiceActualYieldByCrop,
