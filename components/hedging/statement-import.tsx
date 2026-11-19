@@ -1324,9 +1324,10 @@ export default function StatementImport({ entities, existingPositions, existingO
                         {rollGroupIdx.has(gi) && (
                           <span className="text-[11px] rounded-full bg-sky-100 text-sky-800 px-2 py-0.5" title="Saved as the closed leg of the roll above">Part of roll</span>
                         )}
-                        {/* A contract with no live coverage (ICE cotton): the statement's
-                            close is the freshest price on hand — offer it as the
-                            operation's manual quote, one tap. */}
+                        {/* A contract with no live coverage (none today — cotton came
+                            onto the feed 2026-11-19): the statement's close is the
+                            freshest price on hand — offer it as the operation's
+                            manual quote, one tap. */}
                         {!hasLiveCoverage(buildContractSymbol(g.commodity, g.contract_month)) && (
                           <QuoteFromCloseButton symbol={buildContractSymbol(g.commodity, g.contract_month)} commodity={g.commodity} price={g.close_price} date={g.close_trade_date} />
                         )}

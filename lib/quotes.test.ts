@@ -33,14 +33,15 @@ describe('manual cotton quote — unit round trip (¢ stored, $/lb displayed)', 
 })
 
 describe('symbols → commodity and live coverage', () => {
-  it('maps the four traded roots; cotton has no live coverage', () => {
+  it('maps the four traded roots; every one has live coverage (cotton as EOD since 2026-11-19)', () => {
     expect(commodityForSymbol('CTZ26')).toBe('Cotton')
     expect(commodityForSymbol('ZCZ26')).toBe('Corn')
     expect(commodityForSymbol('ZSX26')).toBe('Soybeans')
     expect(commodityForSymbol('ZWN27')).toBe('Chicago Wheat')
     expect(commodityForSymbol('XX')).toBeNull()
     expect(hasLiveCoverage('ZCZ26')).toBe(true)
-    expect(hasLiveCoverage('CTZ26')).toBe(false)
+    expect(hasLiveCoverage('CTZ26')).toBe(true)
+    expect(hasLiveCoverage('XXZ26')).toBe(false)
     expect(hasLiveCoverage(null)).toBe(false)
   })
 })

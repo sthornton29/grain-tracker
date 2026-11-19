@@ -9,8 +9,11 @@
 //   3. the most recent LIVE cached row (yesterday's close, a weekend, a
 //      contract Barchart stopped returning);
 //   4. the org's MANUAL quote for the symbol (082 manual_market_quotes —
-//      ICE Cotton has no live coverage in the CME Ag package; a typed price
-//      fills the hole, clearly labeled downstream);
+//      a contract month the feed doesn't return, or the feed is down; a
+//      typed price fills the hole, clearly labeled downstream). ICE Cotton
+//      was manual-only until 2026-11-19, when EOD ICE US came onto the key:
+//      a CT quote is the last SETTLEMENT, so its price_date trails today
+//      until the evening settle and step 2 refetches it on each load;
 //   5. nothing — the caller's existing no-quote handling.
 //
 // Live therefore outranks manual by construction: the moment coverage returns

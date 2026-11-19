@@ -1737,8 +1737,8 @@ function CottonSection({ row, detailsOpen, onToggleDetails, cropYear, refContrac
                   <span className="text-slate-500 tabular-nums inline-flex items-center gap-1">
                     {refContract.symbol}{refQuote ? ` · ${cents2(refQuote.price)}${refQuote.source === 'live' && refQuote.stale ? ' (not current)' : ''}` : ' · no quote'}
                     {refQuote?.source === 'manual' && <QuoteChip quote={refQuote} />}
-                    {/* ICE cotton has no live coverage: the manual quote is the
-                        normal path here — enter it once, saved for every screen. */}
+                    {/* No live quote for this month (the feed doesn't return it, or
+                        is down): enter it once, saved for every screen. */}
                     {refQuote?.source !== 'live' && onManualQuote && (
                       <ManualQuoteControl symbol={refContract.symbol} quote={refQuote ? { symbol: refContract.symbol, ...refQuote } : null} onSaved={onManualQuote} compact />
                     )}

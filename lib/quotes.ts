@@ -2,8 +2,8 @@
 // around it (082):
 //
 //   * a quote is `live` (Barchart, via the market_prices day-cache) or
-//     `manual` (typed by the org where a price was missing — ICE Cotton has
-//     no live coverage in the CME Ag package). Resolution order lives in
+//     `manual` (typed by the org where a price was missing — a contract
+//     month the feed doesn't return, or the feed is down). Resolution order lives in
 //     lib/quote-resolution.ts and is always live → manual → none; the client
 //     never decides, it only READS the source it was handed;
 //   * a manual quote is never mistaken for market data: `quoteProvenance`
@@ -158,8 +158,10 @@ export function commodityForSymbol(symbol: string | null | undefined): 'Corn' | 
 }
 
 /** Commodities the live feed does not cover — their symbols show the manual
- *  entry control even before a fetch has failed. */
-export const NO_LIVE_COVERAGE_COMMODITIES: ReadonlySet<string> = new Set(['Cotton'])
+ *  entry control even before a fetch has failed. Empty since 2026-11-19: ICE
+ *  Cotton came onto the Barchart key as end-of-day settlements (its quote is
+ *  dated the last settlement, so it reads `stale` intraday — expected). */
+export const NO_LIVE_COVERAGE_COMMODITIES: ReadonlySet<string> = new Set<string>()
 
 export function hasLiveCoverage(symbol: string | null | undefined): boolean {
   const c = commodityForSymbol(symbol)

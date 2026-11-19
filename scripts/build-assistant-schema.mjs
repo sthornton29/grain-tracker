@@ -167,7 +167,7 @@ export const TABLE_DOCS = {
   futures_positions: ['Futures hedge positions (open/closed) with rolls linked through roll_group_id / rolled_from_position_id', '/hedging'],
   options_positions: ['Options positions (puts/calls) with premiums and results', '/hedging'],
   hedge_position_events: ['Append-only history of every hedge position change (open, close, roll, edit, import)', '/hedging'],
-  manual_market_quotes: ['Hand-entered futures quotes for contracts with no live price (cotton)', '/hedging'],
+  manual_market_quotes: ['Hand-entered futures quotes for contracts with no live price (a fallback; live prices take over when available)', '/hedging'],
   farm_links: ['The pairing with Turnrow Farm (one per organization): status, Farm organization name, granted scopes, last sync per direction; codes and tokens stored hashed', '/settings/farm-link'],
   farm_link_ids: ['The id map between Grain rows and Turnrow Farm rows (grain_table x grain_id <-> farm_uid); a land row with a map entry is managed in Turnrow Farm', '/settings/farm-link'],
   farm_link_calls: ['Rolling log of Turnrow Farm link API calls (endpoint, status, record counts), trimmed to 30 days', '/settings/farm-link'],

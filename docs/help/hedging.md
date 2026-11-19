@@ -1,8 +1,8 @@
 ---
 page_route: /hedging
 title: Hedging
-updated: 2026-11-10
-keywords: hedging, futures, options, positions, open, closed, realized, unrealized, brokerage statement, commissions, P&L, market prices, manual quote, manual price, cotton price, no live price, enter price, stale quote, roll, rolled, roll forward, spread, effective price, history, audit trail, who changed, when, statement import, partial roll, open positions check, reconciliation, save anyway, undo import, undo this import, subtotal, 23*, duplicate roll, fills, skipped statement, missing statement, import in order, account number, wrong count, too many contracts
+updated: 2026-11-19
+keywords: hedging, futures, options, positions, open, closed, realized, unrealized, brokerage statement, commissions, P&L, market prices, manual quote, manual price, cotton price, cotton futures, yesterday's price, settlement, no live price, enter price, stale quote, roll, rolled, roll forward, spread, effective price, history, audit trail, who changed, when, statement import, partial roll, open positions check, reconciliation, save anyway, undo import, undo this import, subtotal, 23*, duplicate roll, fills, skipped statement, missing statement, import in order, account number, wrong count, too many contracts
 ---
 ## What this page is for
 
@@ -63,12 +63,11 @@ Every open, close, partial close, roll, edit, crop-year change, delete, and stat
 
 ## When a price says "manual"
 
-Turnrow's live price feed covers corn, soybeans, and wheat. It does not cover **cotton** (ICE Cotton No. 2), and once in a while a contract month or the whole feed is unavailable. Rather than leave the number blank, any contract with no live price shows an **enter price** box — on the price board here, and anywhere else that price is needed (the Marketing Dashboard's what-if, the Income Sensitivity price axis, the Crop Budget Planner). Type the settlement from your broker or the exchange and it is saved for that contract; every screen then uses it. Cotton can be typed either way, $0.7265 or 72.65 — both mean the same price and display as dollars per pound.
+Turnrow's live price feed covers corn, soybeans, wheat, and **cotton** (ICE Cotton No. 2). Once in a while a contract month or the whole feed is unavailable. Rather than leave the number blank, any contract with no live price shows an **enter price** box — on the price board here, and anywhere else that price is needed (the Marketing Dashboard's what-if, the Income Sensitivity price axis, the Crop Budget Planner). Type the settlement from your broker or the exchange and it is saved for that contract; every screen then uses it. Cotton can be typed either way, $0.7265 or 72.65 — both mean the same price and display as dollars per pound.
 
 - A price you typed is never dressed up as market data: it carries an amber **manual · 9/2** chip (the date you entered it) everywhere it appears — the price board, the marketing price buildup, axis headers, and the unrealized P&L rows it feeds.
 - The chip warns when the price gets old: after a week it says the quote is a week old; after a month it turns red. Update it by typing over it — the same box.
-- If live coverage comes back for that contract, the live price takes over automatically and the manual one is kept only as a fallback.
-- Importing a brokerage statement that lists a settlement for a contract you have a manual quote on (or none) offers to update the manual quote to the statement's close with one tap.
+- If live coverage comes back for that contract, the live price takes over automatically and the manual one is kept only as a fallback. Cotton prices you typed before cotton joined the live feed work the same way: the live price now shows instead.
 
 ## Common questions
 
@@ -79,8 +78,8 @@ Turnrow's live price feed covers corn, soybeans, and wheat. It does not cover **
 - **A roll came in earlier as two separate trades — can I fix it?** Yes. Import that day's statement again: the review finds the roll, shows both halves as already recorded, and links them when you save. Nothing is duplicated, the new month picks up the right crop year, and the possibly-closed step stops flagging the old month.
 - **Why does the new month show two prices?** The first is what the new leg actually opened at; the smaller *eff.* figure is the effective price since the original entry, with the roll spreads folded in.
 - **Do hedge results show up in my marketing numbers?** Yes — realized futures results flow into the marketing and revenue reports, counted once, per crop year.
-- **Why are there no live prices right now?** Quotes can be temporarily unavailable; positions are still there, and any contract without a price offers an **enter price** box so you can carry on with a manual quote. If live prices never come back for corn, soybeans, or wheat, contact support.
-- **Why is my cotton price always "manual"?** Cotton (ICE) is not in the live feed. Enter the settlement when you check it — it is remembered until you change it.
+- **Why are there no live prices right now?** Quotes can be temporarily unavailable; positions are still there, and any contract without a price offers an **enter price** box so you can carry on with a manual quote. If live prices never come back for corn, soybeans, wheat, or cotton, contact support.
+- **Why is my cotton price from yesterday?** Cotton updates once a day, with the exchange's settlement price after the close. During the trading day you see the last settlement, with its date beside it; the new one comes in that evening. Corn, soybeans, and wheat update during the day.
 
 ## If something looks wrong
 
